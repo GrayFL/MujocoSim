@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mujocosim"
+version = "0.2.0"
+description = "Composable MuJoCo robots, scenes and sensors with optional RSim ports"
+requires-python = ">=3.12"
+dependencies = ["mujoco>=3.3", "numpy>=1.26", "scipy", "trimesh>=4", "Pillow", "matplotlib", "fast-simplification>=0.1.10"]
+
+[project.optional-dependencies]
+rsim = ["rsim>=0.3.0", "graphmap>=0.1.0", "threadpoolctl>=3"]
+dds = ["rsim[dds]>=0.3.0", "graphmap>=0.1.0", "threadpoolctl>=3"]
+preview = ["opencv-python>=4.8"]
+test = ["pytest>=8"]
+
+[project.scripts]
+mujocosim = "mujocosim.cli:main"
+mujoco-diffdrive = "mujoco_diffdrive.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mujocosim*", "mujoco_diffdrive*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
