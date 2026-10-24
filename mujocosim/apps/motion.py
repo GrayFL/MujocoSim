@@ -9,6 +9,7 @@ from pathlib import Path
 
 from rsim.runtime import Runtime
 from rsim.devices import Chassis
+from mujocosim.deployment import DEFAULT_CACHE
 
 
 async def exercise(chassis):
@@ -50,7 +51,8 @@ async def run_connected(args):
     from rsim.transport.descriptor import TransportConfig
     from rsim.runtime.sharing import SharedComponent, PortSpec
     from mujocosim.apps.recording import snapshot
-    transport = TransportConfig('cyclonedds', args.domain)
+    from mujocosim.integrations.transport import configure_transport
+    transport = configure_transport(TransportConfig('cyclonedds', args.domain))
     chassis = Chassis(args.connect, transport=transport)
     sensors = SharedComponent(key='mujoco:' + args.connect, interface_version='mujoco-v1',
         ports={name: PortSpec(history_capacity=8) for name in ('image', 'depth', 'camera_info', 'scan')},
@@ -68,7 +70,7 @@ async def run_connected(args):
     return result
 
 
-def main(argv=None, *, default_scene=None, default_cache='assets/cache',
+def main(argv=None, *, default_scene=None, default_cache=DEFAULT_CACHE,
          default_output='assets/runs/motion'):
     parser = argparse.ArgumentParser(description=__doc__)
     target = parser.add_mutually_exclusive_group()

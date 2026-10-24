@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image
 
 from mujocosim import Simulation, SensorConfig
+from mujocosim.deployment import DEFAULT_CACHE
 
 
 def check(name, directory, output):
@@ -107,7 +108,7 @@ def check(name, directory, output):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--index", type=Path, default=Path("assets/cache/scene_index.json"))
+    parser.add_argument("--index", type=Path, default=Path(DEFAULT_CACHE) / "scene_index.json")
     parser.add_argument("--output", type=Path, default=Path("assets/runs/scene_checks"))
     args = parser.parse_args(argv)
     for name, scene in json.loads(args.index.read_text(encoding="utf-8")).items():

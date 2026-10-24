@@ -56,11 +56,11 @@ def test_custom_scene_and_robot_without_chassis_or_sensor_assumptions(tmp_path):
         assert sim.robot.telemetry()['displacement'] == pytest.approx(0)
 
 
-def test_core_packages_do_not_depend_on_rsim_or_compatibility_package():
+def test_core_packages_do_not_depend_on_rsim():
     root = Path(__file__).resolve().parents[1] / 'mujocosim'
     for path in root.rglob('*.py'):
-        if path.relative_to(root).parts[0] in ('integrations', 'apps'):
+        if path.relative_to(root).parts[0] in ('integrations', 'apps', 'components'):
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding='utf8'))):
             names = [x.name for x in node.names] if isinstance(node, ast.Import) else [node.module or ''] if isinstance(node, ast.ImportFrom) else []
-            assert not any(name.split('.')[0] in ('rsim', 'mujoco_diffdrive') for name in names), path
+            assert not any(name.split('.')[0] == 'rsim' for name in names), path

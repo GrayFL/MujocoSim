@@ -19,21 +19,25 @@ from mujocosim.integrations.rsim import create_source as MuJoCo
 from rsim.drivers import Chassis as ChassisProvider
 from rsim.transport.descriptor import TransportConfig
 from mujocosim.config import SensorConfig
+from mujocosim.deployment import DEFAULT_CACHE
 from mujocosim.scenes import prepare_scene
 
 
 class Keyboard:
     def __init__(self):
         self.command = (0.0, 0.0)
+        self.command_revision = 0
         self.reset = self.snapshot = self.quit = False
         self.lock = threading.Lock()
 
     def __call__(self, key):
         with self.lock:
-            commands = {ord("W"): (.35, 0), ord("S"): (-.25, 0),
-                        ord("A"): (0, .8), ord("D"): (0, -.8), ord(" "): (0, 0)}
+            # GLFW arrow key codes. Leave WASD to MuJoCo's viewer shortcuts.
+            commands = {265: (.35, 0), 264: (-.25, 0),
+                        263: (0, .8), 262: (0, -.8), ord(" "): (0, 0)}
             if key in commands:
                 self.command = commands[key]
+                self.command_revision += 1
             if key == ord("R"):
                 self.reset = True
                 self.command = (0, 0)
@@ -71,10 +75,13 @@ def preview_sensors(frame, scan):
     cv2.rectangle(canvas, (231, 231), (249, 249), (20, 20, 220), 1)
     cv2.arrowedLine(canvas, (240, 240), (240, 215), (20, 20, 220), 2)
     cv2.imshow("2D lidar: forward up, left left", canvas)
-    return cv2.waitKey(1) & 0xff
+    key = cv2.waitKeyEx(1)
+    # Win32 and X11 OpenCV arrow codes -> the viewer's GLFW codes.
+    return {2490368: 265, 2621440: 264, 2424832: 263, 2555904: 262,
+            65362: 265, 65364: 264, 65361: 263, 65363: 262}.get(key, key)
 
 
-def parser(default_scene=None, default_cache='assets/cache', default_output='assets/runs/latest'):
+def parser(default_scene=None, default_cache=DEFAULT_CACHE, default_output='assets/runs/latest'):
     p = argparse.ArgumentParser(description="0.6 m differential-drive robot in a textured GLB scene")
     p.add_argument("--scene", default=default_scene, required=default_scene is None, help="GLB/GLTF, composition JSON, or prepared scene directory")
     p.add_argument("--up-axis", choices=["auto", "y", "z"], default="auto")
@@ -139,7 +146,7 @@ async def run(args, scene, preview_executor=None):
             import mujoco.viewer
             viewer_context = mujoco.viewer.launch_passive(source.simulation.model, source.simulation.data,
                                                           key_callback=keys)
-            print('W/S forward/back, A/D turn, Space stop, R reset, P snapshot, Q quit.', flush=True)
+            print('Up/Down forward/back, Left/Right turn, Space stop, R reset, P snapshot, Q quit.', flush=True)
         trajectory, scans, scan_poses = [], [], []
         state_cursor = scan_cursor = 0
         next_preview = next_record = 0.
@@ -194,8 +201,10 @@ async def run(args, scene, preview_executor=None):
                     if args.preview and stamp >= next_preview:
                         frame, scan = await source.inspect(lambda sim: (sim.rgbd(), sim.lidar()))
                         key = await preview(frame, scan)
-                        if key < 128:
+                        if 0 <= key < 128:
                             keys(ord(chr(key).upper()))
+                        elif key in (262, 263, 264, 265):
+                            keys(key)
                         next_preview = stamp + .2
                     if viewer is not None:
                         await source.inspect(lambda sim: viewer.sync())
@@ -209,7 +218,7 @@ async def run(args, scene, preview_executor=None):
         print(f'Saved RGBD, lidar, transforms, trajectory and diagnostics to {output.resolve()}', flush=True)
 
 
-def main(argv=None, *, default_scene=None, default_cache='assets/cache',
+def main(argv=None, *, default_scene=None, default_cache=DEFAULT_CACHE,
          default_output='assets/runs/latest'):
     p = parser(default_scene, default_cache, default_output)
     args = p.parse_args(argv)

@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from scipy import ndimage
 import trimesh
+from mujocosim.deployment import DEFAULT_CACHE
 
 CACHE_VERSION = 4
 
@@ -71,7 +72,7 @@ def _floor_height(mesh):
     return float(z[np.searchsorted(np.cumsum(area), area.sum() / 2)])
 
 
-def prepare_mesh(source, cache_root="assets/cache", *, up_axis="auto",
+def prepare_mesh(source, cache_root=DEFAULT_CACHE, *, up_axis="auto",
                   floor_height=None, pitch=0.08, collision_height=1.16, force=False):
     source = Path(source).expanduser().resolve()
     if not source.is_file():

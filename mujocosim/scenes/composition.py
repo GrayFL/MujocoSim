@@ -57,7 +57,7 @@ def _room(config, pitch):
 def prepare_composition(source, cache_root, *, force=False):
     source = Path(source).resolve()
     config = json.loads(source.read_text(encoding="utf-8"))
-    if config.get("format") not in ("mujocosim-scene-v1", "rsim-scene-v1"):
+    if config.get("format") != "mujocosim-scene-v1":
         raise ValueError("composition format must be mujocosim-scene-v1")
     if ("room" in config) == ("base_scene" in config):
         raise ValueError("specify exactly one of room or base_scene")

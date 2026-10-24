@@ -1,6 +1,7 @@
 """Scene builders produce one prepared directory; the engine ignores provenance."""
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+from mujocosim.deployment import DEFAULT_CACHE
 
 
 @runtime_checkable
@@ -8,7 +9,7 @@ class SceneBuilder(Protocol):
     def prepare(self, cache_root, **options) -> Path: ...
 
 
-def prepare_scene(source, cache_root="assets/cache", **options):
+def prepare_scene(source, cache_root=DEFAULT_CACHE, **options):
     if isinstance(source, SceneBuilder):
         return prepare_scene(source.prepare(cache_root, **options), cache_root)
     source = Path(source).expanduser().resolve()

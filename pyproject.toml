@@ -14,13 +14,13 @@ rsim = ["rsim>=0.3.0", "graphmap>=0.1.0", "threadpoolctl>=3"]
 dds = ["rsim[dds]>=0.3.0", "graphmap>=0.1.0", "threadpoolctl>=3"]
 preview = ["opencv-python>=4.8"]
 test = ["pytest>=8"]
+notebook = ["jupyterlab", "ipykernel", "nbclient", "nbformat", "pygame-ce>=2.5", "psutil"]
 
 [project.scripts]
 mujocosim = "mujocosim.cli:main"
-mujoco-diffdrive = "mujoco_diffdrive.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["mujocosim*", "mujoco_diffdrive*"]
+include = ["mujocosim*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

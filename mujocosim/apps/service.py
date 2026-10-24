@@ -9,12 +9,14 @@ from rsim.runtime import Runtime
 from rsim.runtime.sharing import SharedProvider
 from rsim.transport.descriptor import TransportConfig
 from mujocosim.integrations.rsim import create_source as MuJoCo
+from mujocosim.integrations.transport import configure_transport
 from rsim.drivers import Chassis as Provider
 from mujocosim.config import SensorConfig
+from mujocosim.deployment import DEFAULT_CACHE
 
 
 async def run(args):
-    transport = TransportConfig('cyclonedds', args.domain)
+    transport = configure_transport(TransportConfig('cyclonedds', args.domain))
     source = MuJoCo(args.scene, cache_root=args.cache_dir, motion_enabled=args.enable_motion,
                     hz=args.hz, sensors=SensorConfig(width=args.width, height=args.height))
     shared = SharedProvider(source, key='mujoco:' + args.name, interface_version='mujoco-v1',
@@ -49,7 +51,7 @@ def main(argv=None):
     parser.add_argument('--name', default='mujoco')
     parser.add_argument('--domain', type=int, default=0)
     parser.add_argument('--enable-motion', action='store_true')
-    parser.add_argument('--cache-dir', default='assets/cache')
+    parser.add_argument('--cache-dir', default=DEFAULT_CACHE)
     parser.add_argument('--log', default='assets/runs/provider.log')
     parser.add_argument('--width', type=int, default=640)
     parser.add_argument('--height', type=int, default=480)

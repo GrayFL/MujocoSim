@@ -12,6 +12,7 @@ from rsim.adapters.mujoco import MuJoCoSource, Observation, CommandSpec
 from rsim.core.commands import VelocityCommand, CommandRejected
 from rsim.core.model import Image, PointCloud
 from mujocosim.config import PhysicsConfig, SensorConfig
+from mujocosim.deployment import DEFAULT_CACHE
 from mujocosim.robots import DifferentialDrive, DriveCommand
 
 def readonly(value):
@@ -40,7 +41,7 @@ def xyz_cloud(points, frame_id, colors=None):
 
 
 class DifferentialDriveBackend:
-    def __init__(self, scene=None, *, scene_dir=None, cache_root='assets/cache',
+    def __init__(self, scene=None, *, scene_dir=None, cache_root=DEFAULT_CACHE,
                  up_axis='auto', floor_height=None, pitch=.08, rebuild=False,
                  spawn=None, robot=None, sensors=None, physics=None,
                  lidar_hz=10., camera_hz=5., motion_enabled=False):
@@ -109,6 +110,8 @@ class DifferentialDriveBackend:
         values = dict(pose=pose, truth=pose.copy(), imu=imu, odom=odom,
                       state=dict(backend='mujoco', motion_enabled=self.motion_enabled,
                                  simulation_time=stamp, physics_time=float(sim.data.time),
+                                 linear_velocity=float(telemetry['body_velocity'][3]),
+                                 angular_velocity=float(telemetry['body_velocity'][2]),
                                  contacts=int(sim.data.ncon), wheel_targets=telemetry['wheel_targets'].tolist()))
         metadata = {'pose_kind': 'ground_truth', 'world_from_base': matrix_metadata(base)}
         if demand.has('scan', 'lidar_points') and (force or stamp+1e-9 >= self._next_scan):

@@ -105,7 +105,17 @@ class DifferentialDriveState:
         self.odometry += [distance*math.cos(yaw), distance*math.sin(yaw), angle]
 
     def telemetry(self):
+        import mujoco
+        velocity = np.empty(6)
+        mujoco.mj_objectVelocity(self.model, self.data, mujoco.mjtObj.mjOBJ_BODY,
+                                self.body_id, velocity, 0)
+        # mjOBJ_BODY + flg_local=1 uses the inertial principal-axis frame,
+        # which need not match base_footprint. Rotate world vectors explicitly.
+        rotation = self.data.xmat[self.body_id].reshape(3, 3)
+        velocity[:3] = rotation.T @ velocity[:3]
+        velocity[3:] = rotation.T @ velocity[3:]
         return dict(odometry=self.odometry.copy(),
+                    body_velocity=velocity,
                     quaternion_xyzw=np.roll(self.data.xquat[self.body_id], -1).copy(),
                     gyro=self.data.sensor('imu_gyro').data.copy(),
                     accel=self.data.sensor('imu_accel').data.copy(),

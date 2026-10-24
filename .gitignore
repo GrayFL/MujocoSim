@@ -6,7 +6,9 @@ build/
 dist/
 artifacts/
 recordings/
-assets
+assets/*
+!assets/README.md
+*.ipynb
 
 PROJECT.md
 
