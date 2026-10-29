@@ -1,1 +1,1 @@
-"""Project-owned RSim components; the synchronous simulation stays independent."""
+"""Physics/geometry helpers; old runtime paths remain transition-only aliases."""
