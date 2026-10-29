@@ -1,22 +1,47 @@
 """RSim point-cloud navigation component with one writer and manual preemption."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
+from enum import Enum
 import math
 import time
 import uuid
 
 import numpy as np
-from pyrobo import (Bounds2D, DWAConfig, Footprint, NavigationInput, NavigationOutput, Navigator,
+from graphmap.pose import Pose, PoseArray
+from pyrobo import (Bounds2D, DWAConfig, Footprint, NavigationInput, Navigator,
                     PointCloud, RRTConnectConfig, Twist2D, VoronoiConfig, pose2d)
 from pyrobo.pointcloud import PointObstacles
 from pyrobo.control import DynamicWindow
+from pyrobo.core.commands import WheelCommand
 from pyrobo.types import path_poses, wrap_angle
 from rsim.core.component import Component
 from rsim.core.commands import CommandEnvelope, VelocityCommand
 
 from .mapping import laser_observation, readonly
 from mujocosim.components.pixel_geometry import PhysicalProbe, scene_snapshot
+
+
+@dataclass(frozen=True)
+class PlanningOutput:
+    """Application adapter result in body velocity, after native-model conversion."""
+    timestamp: float
+    command: Twist2D
+    status: str
+    safe: bool
+    path: object
+    trajectory: object
+    diagnostics: dict
+
+
+def body_velocity(command, model):
+    if not isinstance(command, WheelCommand):
+        raise TypeError('differential-drive navigation requires WheelCommand')
+    if command.mode == 'coast':
+        raise ValueError('velocity control cannot represent coast')
+    if command.mode in ('soft_stop', 'estop'):
+        return Twist2D()  # Explicit zero-velocity fallback, not a braking guarantee.
+    return Twist2D((command.left+command.right)/2, (command.right-command.left)/model.track)
 
 
 @dataclass(frozen=True)
@@ -92,10 +117,12 @@ class PlanningWorker:
             self.progress_position, self.progress_stamp = np.asarray(xy_yaw[:2]), stamp
         if route is not None:
             return self.route_step(stamp, xy_yaw, velocity, goal, obstacles, route, snapshot)
-        return self.navigator.step(NavigationInput(timestamp=stamp, pose=pose2d(*xy_yaw, body='base_footprint'),
+        output = self.navigator.step(NavigationInput(timestamp=stamp, pose=pose2d(*xy_yaw, body='base_footprint'),
             velocity=Twist2D(*velocity), goal=pose2d(*goal, body='goal'),
             obstacles=PointCloud(obstacles, frame='world', timestamp=None),
             bounds=Bounds2D(*bounds), dt=1/self.config.hz))
+        return PlanningOutput(output.timestamp, body_velocity(output.command, self.navigator.model),
+                              output.status, output.safe, output.path, output.trajectory, output.diagnostics)
 
     def route_step(self, stamp, xy_yaw, velocity, goal, obstacles, route, snapshot):
         self.probe.update(snapshot)
@@ -141,7 +168,7 @@ class PlanningWorker:
         if stamp-self.progress_stamp > 15 and status != 'arrived':
             status, safe = 'route_blocked', False
             failure = 'no_progress'
-        return NavigationOutput(stamp, local.command if safe else Twist2D(), status, safe,
+        return PlanningOutput(stamp, body_velocity(local.command, controller.model) if safe else Twist2D(), status, safe,
             path, local.trajectory, dict(planner='physical_point_roadmap',
                 controller_mode=local.mode, feasible_candidates=local.feasible_candidates,
                 route_index=self.route_index, waypoint_index=self.waypoint_index,
@@ -149,16 +176,25 @@ class PlanningWorker:
 
 
 def finite_dict(values):
-    result = {}
-    for name, value in values.items():
-        if isinstance(value, dict):
-            value = finite_dict(value)
-        elif isinstance(value, (float, np.floating)):
-            value = float(value) if np.isfinite(value) else None
-        elif isinstance(value, np.generic):
-            value = value.item()
-        result[name] = value
-    return result
+    """Convert typed algorithm diagnostics into the application's JSON wire data."""
+    if isinstance(values, dict):
+        return {name: finite_dict(value) for name, value in values.items()}
+    if isinstance(values, (Pose, PoseArray)):
+        return dict(matrix=values.matrix.tolist(), wrd_frame=values.wrd_frame,
+                    ego_frame=values.ego_frame)
+    if isinstance(values, Enum):
+        return values.value
+    if is_dataclass(values):
+        return {field.name: finite_dict(getattr(values, field.name)) for field in fields(values)}
+    if isinstance(values, np.ndarray):
+        return finite_dict(values.tolist())
+    if isinstance(values, (list, tuple)):
+        return [finite_dict(value) for value in values]
+    if isinstance(values, (float, np.floating)):
+        return float(values) if np.isfinite(values) else None
+    if isinstance(values, np.generic):
+        return values.item()
+    return values
 
 
 def planning_points(points, spacing):
@@ -341,7 +377,8 @@ class PointCloudNavigation(Component):
                 self.diagnostics = dict(error=f'{type(error).__name__}: {error}')
                 self._finish('error')
             return
-        if generation != self.generation:
+        if (generation != self.generation or not self.source.state.frames or
+                self.source.state.frames[-1].metadata['episode'] != state.metadata['episode']):
             return
         self.diagnostics = finite_dict(output.diagnostics)
         self.diagnostics['input_obstacle_points'] = input_count
@@ -369,6 +406,8 @@ class PointCloudNavigation(Component):
             if self.episode is not None and self.episode != episode:
                 self.cancel('simulation_reset')
                 self.bounds = self.config.bounds
+                self.command_epoch, self.sequence = uuid.uuid4().hex, 0
+                self.last_physics = None
             self.episode = episode
         valid = fresh and now < self.desired_deadline
         if valid:

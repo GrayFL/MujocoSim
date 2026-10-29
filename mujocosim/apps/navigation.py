@@ -13,13 +13,13 @@ from rsim.runtime import Runtime
 from rsim.runtime.sharing import SharedProvider
 from rsim.transport.descriptor import TransportConfig
 
-from mujocosim.components.mapping import MappingConfig, PointCloudMapper
-from mujocosim.components.navigation import NavigationConfig, PointCloudNavigation
-from mujocosim.components.pixel_target import PixelTarget
+from mujocosim.rsim.components.mapping import MappingConfig, PointCloudMapper
+from mujocosim.rsim.components.navigation import NavigationConfig, PointCloudNavigation
+from mujocosim.rsim.components.pixel_target import PixelTarget
 from mujocosim.config import SensorConfig
 from mujocosim.deployment import DEFAULT_SCENE, DEFAULT_CACHE, new_map_directory
 from mujocosim.integrations.navigation import NavigationService
-from mujocosim.integrations.rsim import create_source
+from mujocosim.rsim.drivers import MujocoChassisFactory
 from mujocosim.integrations.transport import configure_transport
 
 
@@ -28,8 +28,8 @@ class NavigationWorld(Component):
                  motion_enabled=False, viewer=False, output=None, map_output=None, sensors=None,
                  mapping=None, navigation=None, pixel_target=None):
         mapping = mapping or MappingConfig()
-        self.source = create_source(scene, cache_root=cache_dir, motion_enabled=motion_enabled,
-                                    sensors=sensors or SensorConfig(), camera_hz=mapping.hz)
+        self.source = MujocoChassisFactory(scene, cache_root=cache_dir, motion_enabled=motion_enabled,
+                                    sensors=sensors or SensorConfig(), camera_hz=mapping.hz).build()
         self.mapper = PointCloudMapper(self.source, config=mapping)
         self.navigator = PointCloudNavigation(self.source, self.mapper,
                                               config=navigation, motion_enabled=motion_enabled)
@@ -52,11 +52,12 @@ class NavigationWorld(Component):
             import mujoco.viewer
             from .demo import Keyboard
             self.keys = Keyboard()
-            self.viewer = mujoco.viewer.launch_passive(self.source.simulation.model,
-                self.source.simulation.data, key_callback=self.keys)
+            self.viewer = await self.source.inspect(lambda sim: mujoco.viewer.launch_passive(
+                sim.model, sim.data, key_callback=self.keys))
             with self.viewer.lock():
                 self.viewer.opt.geomgroup[:] = [1, 1, 0, 0, 0, 0]
-                self.viewer.cam.lookat[:] = [*self.source.simulation.pose2d[:2], .4]
+                pose = (await self.source.pose.get()).data.position
+                self.viewer.cam.lookat[:] = [*pose[:2], .4]
                 self.viewer.cam.distance, self.viewer.cam.azimuth, self.viewer.cam.elevation = 5., 135, -55
             self.last_key_command = (0., 0.)
             self.last_key_revision = 0

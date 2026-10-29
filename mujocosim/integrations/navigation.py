@@ -270,6 +270,6 @@ class NavigationMap(SharedComponent):
     def __init__(self, name='navigation', *, transport=None):
         super().__init__(key='mujocosim-navigation:'+name,
             interface_version='mujocosim-navigation-v1', transport=configure_transport(transport),
-            ports={name: PortSpec(history_capacity=size) for name, size in
+            ports={name: PortSpec(history_capacity=size, clock='simulation' if name == 'pose' else None) for name, size in
                    [('map', 2), ('path', 2), ('pose', 32), ('state', 32),
                     ('observation', 2), ('targets', 4), ('topology', 2)]})
