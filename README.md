@@ -2,21 +2,21 @@
 
 基于 MuJoCo 的机器人、传感器与场景仿真工具，通过可选的 RSim 集成提供 Signal / CommandSink 与设备接口。目前 demo 是 0.6 m × 0.6 m 差速机器人、二维雷达、前向 RGBD，以及 HM3D 场景和可推动的桌椅。
 
-**仿真实现全部位于本项目。** RSim 只提供协议适配、组件运行与设备接口。项目结构和扩展方法见 [ARCHITECTURE.md](ARCHITECTURE.md)，本机路径、开发约束与验证记录见 [PROJECT.md](PROJECT.md)。
+**仿真实现全部位于本项目。** RSim 只提供通用组件运行、通信与设备接口；MuJoCo 的线程、采样、命令安全和生命周期由本项目的 `mujocosim.rsim` 负责。项目结构和扩展方法见 [ARCHITECTURE.md](ARCHITECTURE.md)，本机路径、开发约束与验证记录见 [PROJECT.md](PROJECT.md)。
 
 ## 安装
 
-使用 Python ≥ 3.12 和已有 Conda/venv 环境。在本项目根目录安装：
+使用 Python ≥ 3.12。四个项目须使用兼容的本地源码版本，不要用公共索引上的同名包替换。源码链接 / `.pth` 开发模式可直接使用；安装元数据按能力区分：
 
 ```sh
-# RSim 源码路径按实际位置调整，必须包含新的注入式 MuJoCo adapter
-python -m pip install -e ../RSim
-python -m pip install -e ".[rsim]"
-# 可选：预览窗口 / DDS 跨进程 / 测试
-python -m pip install -e ".[preview,dds,test]"
+uv pip install --dry-run -e '.[server]'   # 先检查解析结果
+uv pip install -e '.[engine]'            # 独立同步物理，无 RSim
+uv pip install -e '.[server]'            # 引擎 + RSim/DDS 设备提供端，无 pyrobo
+uv pip install -e '.[rsim,dds]'          # 专有设备客户端，无 MuJoCo
+uv pip install -e '.[server,apps]'       # 点云/像素导航应用
 ```
 
-仅使用同步物理 API 时 `pip install -e .` 即可，不要求 RSim。依赖包括 MuJoCo、NumPy、SciPy、trimesh、Pillow、Matplotlib、fast-simplification；RSim 集成另外需要兼容的 graphmap.pose.Pose。可选 scipykit 绘图样式不可用时回退 Matplotlib。不要仅凭 RSim 的版本号使用旧发行包：adapter 必须提供 `SimulationBackend`、`Observation`、`CommandSpec`。
+基础包仅依赖 NumPy；`engine` 包含 MuJoCo、SciPy、trimesh 和 Pillow，`scene` 另含大网格减面使用的 fast-simplification，`apps` 包含导航与绘图依赖。仅需要公共底盘接口的消费者不必安装 MujocoSim，可使用 `rsim.devices.ChassisPortsDevice`。本轮不要求构建 wheel。
 
 RGBD 和预览需要 OpenGL。`--headless` 关闭交互窗口，仍会离屏渲染最终图像。macOS 被动 viewer 使用 `mjpython` 启动。原始数据单独准备，不随仓库分发。
 
@@ -113,11 +113,34 @@ with Simulation(scene, robot=DifferentialDrive(), sensors=SensorConfig(),
 ## RSim 集成
 
 ```python
-from mujocosim.integrations.rsim import create_source
-source = create_source("/path/to/mujoco/hm3d/scene.glb", motion_enabled=True)
+from rsim import Runtime, VelocityCommand
+from rsim.devices import ChassisPortsDevice
+from mujocosim.rsim import MujocoChassisFactory
+
+factory = MujocoChassisFactory(scene_dir="/path/to/prepared-scene", motion_enabled=True)
+source = factory.build()                         # 未启动，不创建引擎或线程
+chassis = ChassisPortsDevice.from_component(source)
+async with Runtime(chassis.pose, chassis.state, chassis.velocity):
+    frame = await chassis.pose.get(timeout=10)
+    await chassis.velocity.set(VelocityCommand(.2, .0), ttl=.2)
 ```
 
-这里的 `create_source` 是本项目的差速 demo 组装。它把本地轮编码器、IMU、图像和雷达转换为 RSim 端口，再注入 RSim adapter。业务应用仍使用 `rsim.devices.Chassis`，完整组装位于 `mujocosim/apps/demo.py`、`motion.py`。底层 `rsim.drivers.MuJoCo` 现在接受后端工厂，**不再接受 scene 并自动构造差速机器人**。
+RSim 组合要求 `rsim>=0.4.0`（包含端口校验、episode历史隔离与通用客户端）。完整端口只在 `mujocosim.rsim.drivers.chassis.MujocoChassisFactory.port_specs()` 声明。`build()` 构造本地组件，`shared(key=...)` 构造显式启动描述，`device(key=...)` 只连接已运行实例。`INTERFACE_VERSION='chassis-ports-v1'` 与 pyrobo 内存设备一致；共同端口为 `pose/state/velocity`。`pose` 明确是 ground truth，地图和导航输入由应用注入。
+
+`factory.service(source=shared, ...)` 可将同一个 World 包装成原 `rsim.devices.Chassis` 的 RPC 服务；Shared Ports 与 RPC 是不同接口，不能交换客户端。速度默认 TTL 上限 .5 s，运动默认关闭。一个 World 的物理、传感器、reset 和 inspect 始终由同一 owner 线程串行处理；数据读取不推进物理。
+
+专有轻量客户端无需场景文件或 MuJoCo：
+
+```python
+from mujocosim.rsim import SimulationDevice
+view = SimulationDevice(key="mujoco:my_world", clock="simulation", transport=dds)
+async with Runtime(view.state, view.reset_request):
+    acknowledgement = await view.reset()  # 完成 reset 和首帧发布后返回 episode
+```
+
+reset 保留原生物理时间（重新从零开始），增加 episode，清除旧历史并退休旧命令 epoch；控制器需使用新 epoch 才能恢复。暂停同样清除执行命令，恢复不会续命旧命令。`inspect(callback)` 是本地 owner 线程工具入口，回调应返回快照，不能把活动 MjData 交给其他线程。新组件不提供 `.simulation` 公共可变视图。
+
+旧 `mujocosim.integrations.rsim.create_source` 保留到 0.4 的过渡入口，委托同一工厂并显式采用 `legacy_continuous` 时间策略；旧直接 `.simulation` 访问仅存在于该兼容 facade。停止 Provider 后整体更新 RSim 与 MujocoSim，再按新工厂重建，不恢复旧进程的 pickle。 点云导航共享视图同步升级为 `mujocosim-navigation-v2`，旧客户端须更新后重新连接。
 
 跨进程保持相同应用接口（安装 DDS extra，同机、同一用户）：
 
@@ -161,10 +184,10 @@ transport = configure_transport(TransportConfig('cyclonedds', 0))
 
 ## 点云建图、Notebook 导航与 pygame 控制
 
-此示例额外需要兼容的 **graphmap、pyrobo、scipykit 源码库**可导入。graphmap 必须有 `Environment(enable_2d_map=False)` 和 `adapters.rgbd_observation`，pyrobo 必须有 `Navigator`、`RRTConnectConfig`、`VoronoiConfig`、`DWAConfig`。不要用不相关的同名 PyPI 包代替。按各库说明安装到同一环境，再安装 Notebook/pygame 工具（已有依赖无需重装）：
+此示例额外需要兼容的 **graphmap、pyrobo 源码库**可导入；scipykit 仅提供可选绘图样式。graphmap 必须有 `Environment(enable_2d_map=False)` 和 `adapters.rgbd_observation`，pyrobo 必须有 `Navigator`、`RRTConnectConfig`、`VoronoiConfig`、`DWAConfig`。不要用不相关的同名 PyPI 包代替。按各库说明安装到同一环境，再安装 Notebook/pygame 工具（已有依赖无需重装）：
 
 ```sh
-python -m pip install -e ".[dds,notebook]"
+uv pip install -e ".[server,apps,notebook]"
 # 终端 1：保持仿真运行；--keyboard 打开 RSim 原有 pygame 控制界面
 python -m mujocosim.apps.navigation --scene /path/to/mujoco/scenes/simple_indoor.scene.json --enable-motion --keyboard
 # 终端 2：从项目根目录启动，打开 Notebook
@@ -261,7 +284,7 @@ python -m examples.check_navigation --notebook pixel_navigation --scene /path/to
 
 单位 m/s/rad，机器人 X 前、Y 左、Z 上。差速 demo 的 `base_footprint` 为名义地面中心；雷达位于 `(0,0,.4)`，相机位于 `(0,0,1)`。光学相机 X 右、Y 下、Z 前。RGB 为 uint8 RGB；深度为 float32 米制光学 Z，范围外 NaN；雷达无回波为 +inf。默认 640×480、360 束。
 
-RSim pose/truth 是世界真值；odom 来自真实轮关节转角，imu 使用 MuJoCo gyro/accelerometer。state 的 linear_velocity/angular_velocity 是 base_footprint 中的真值前向速度/偏航速度。图像和数组只读。RSim Frame 时间戳跨 reset 单调，数据中的 physics_time 和传感器 header 使用本次 episode 的物理时间；不同 episode 的 header 不应直接相减。
+RSim pose/truth 是世界真值；odom 来自真实轮关节转角，imu 使用 MuJoCo gyro/accelerometer。state 的 `linear_x/angular_z` 是 base_footprint 中的真值前向速度/偏航速度，原 `linear_velocity/angular_velocity` 保留别名。`acceleration/yaw_acceleration` 使用相邻物理样本求导；`frame/episode/step_index/pose_kind` 与 Frame 元数据一致。`collided` 标识平地场景中机器人非竖直支撑接触，不把正常车轮触地计为撞障。图像和数组只读。新工厂的 RSim Frame 时间戳与 `physics_time`、传感器 header 均来自本次 episode 的原生物理时间；不同 episode 的时间戳不可直接相减。只有过渡 `create_source` 的 `legacy_continuous` 模式保留跨 reset 连续偏移。
 
 RSim 元数据中的小型变换矩阵和相机内参以不可变嵌套 tuple 保存，数值处理时使用 `np.asarray(...)`；大尺寸图像、点云与雷达数组保留数组表示。
 
@@ -274,10 +297,11 @@ RSim 元数据中的小型变换矩阵和相机内参以不可变嵌套 tuple �
 ## 验证范围
 
 ```sh
-# 本项目：物理、场景、传感器、扩展接口、本地 RSim 绑定
-python -m pytest tests -q
-# 在 RSim 根目录：只验证 MuJoCo adapter
-python -m pytest tests/test_mujoco_adapter.py -q
+# 无窗口 Linux 的真实物理、RGBD、工厂、命令安全、共享进程与旧路径回归
+MUJOCO_GL=egl python -m pytest tests -q
+# 明确选取两个独立解释器，证明 provider 无 pyrobo、专有客户端无 mujoco
+python tests/check_environments.py --provider-python /path/to/provider/bin/python \
+  --client-python /path/to/client/bin/python --output assets/environment-check
 ```
 
-不运行 RSim 的平台、共享存储、ROS、通用设备或控制器测试套件。真实场景检查用 `examples.check_scenes`；迁移安装或接口变更后再运行相关本地 demo。
+跨环境测试会启动显式 Provider，连接同一个 World，验证 reset 完成回执、新 episode、历史隔离和实际 worker 解释器。真实设备/ROS2 硬件、GUI 交互、跨主机控制和跨进程严格锁步不在此测试范围。开发机配置、实际运行结果、兼容组合与阶段未完成项记录在本地 `PROJECT.md`。

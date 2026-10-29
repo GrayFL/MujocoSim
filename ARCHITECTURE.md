@@ -21,16 +21,20 @@ mujocosim/
     mesh.py                 # GLB/GLTF，含 HM3D，选层/体素碰撞
     composition.py          # 房间或扫描场景 + 动态物体
     objects.py              # 物体定向、缩放、减面、显示与碰撞
-  integrations/rsim.py       # 本项目 demo 的端口、消息和命令映射
+  rsim/drivers/chassis.py   # MujocoChassisFactory：配置与完整端口唯一声明
+  rsim/devices/simulation.py # 无引擎、无场景的连接与 reset 回执
+  rsim/components/source.py # 单一 owner、生命周期、host TTL 与原生 episode
+  rsim/components/backend.py # 本地物理到公共数据的转换
+  integrations/rsim.py       # 0.4 退役的委托式兼容入口
   integrations/navigation.py # 同机 DDS 导航服务/客户端、只读地图视图
-  components/mapping.py     # graphmap RGBD/雷达三维融合
-  components/navigation.py  # pyrobo 规划、控制与手动抢占
+  rsim/components/mapping.py     # graphmap RGBD/雷达三维融合
+  rsim/components/navigation.py  # pyrobo 规划、控制与手动抢占
   apps/                     # demo / motion / service / navigation / keyboard
 assets/                     # 可视化、日志及小型临时实验输出
 examples/                   # 构建与验证项目场景、设备 API 示例
 ```
 
-核心的 simulation、robots、sensors、scenes 不依赖 RSim，也不回调兼容包。integrations、components 和 apps 是可选 RSim 层，可以依赖两者。RSim adapter 不导入 MujocoSim；项目通过工厂注入后端。保留直接 Python 组合，不引入插件扫描器、全局注册中心、通用实体树或复杂配置继承。
+核心的 simulation、robots、sensors、scenes 不依赖 RSim，也不回调兼容包。`mujocosim.rsim` 是可选运行时层；原 `components` 中的物理/几何工具保留纯领域职责，运行组件旧路径仅 re-export 同一个类。RSim 核心不持有 MuJoCo 适配实现。保留直接 Python 组合，不引入插件扫描器、全局注册中心、通用实体树或复杂配置继承。
 
 ## 机器人接口
 
@@ -38,7 +42,7 @@ examples/                   # 构建与验证项目场景、设备 API 示例
 
 RobotState 负责 reset、apply、stop、after_reset、after_step 和 telemetry；body_id 用于查询根刚体位姿。apply 的命令类型由构型决定。差速机器人使用 DriveCommand，轮半径、轮距、限速、里程计积分全在 differential_drive.py。引擎只调用 apply，不解释轮速或机械臂关节。
 
-新增构型时：在 robots 中实现上述接口，用名字绑定关节和执行器；将实例传给 Simulation。若接 RSim，在本项目 integrations 中选择该构型的端口和命令格式。不要往 RSim adapter 增加 robot_type 分支。`tests/test_extensibility.py` 用单轴滑台、标量力命令和无传感器配置实际验证了该入口。
+新增构型时：在 robots 中实现上述接口，用名字绑定关节和执行器；将实例传给 Simulation。若接 RSim，在本项目 `rsim/drivers` 工厂内声明构型的完整端口和命令格式，`rsim/components` 实现行为。`tests/test_extensibility.py` 用单轴滑台、标量力命令和无传感器配置实际验证了该入口。
 
 当前 spawn 为单层地面上的 `[x,y,yaw]`，Robot.clearance_radius 决定出生点净空；机械臂等固定模型可自行忽略无关分量。需要空中/多楼层任意 SE(3) 初态时再扩展 spawn 契约，不把当前平地契约声称为已支持全部机器人。
 
@@ -60,13 +64,13 @@ Simulation 的 command 只转交 RobotState。step 推进 MuJoCo，再更新机�
 
 ## RSim 协议边界
 
-RSim 的 `SimulationBackend` 只有 open、step(duration,commands)、sample(demand,force)、reset、stop、close。Observation 描述物理时间、输出值和元数据；输出名、容量和 CommandSpec 在构造 adapter 时显式给出。CommandSpec 指定安全回退、验证和安全值判断，不限定为 VelocityCommand。
+`MujocoChassisFactory` 是冻结的轻量配方。完整 `PortSpec` 唯一声明用于本地 Component、SharedProvider 和专有 Device。工厂构造/build 不创建引擎；open 在一个 owner 线程创建后端、World 和全部传感器。配置指纹包含车型、时间步长、运动权限、TTL、端口配置和场景内容摘要；数据集可显式提供 `scene_revision` 作为受控资源版本。
 
-adapter 负责一个工作线程、RSim 需求快照、Signal 发布、独立命令截止时间、motion_enabled 和跨 reset 单调时钟。后端的所有物理/GL 方法在同一线程执行。后端输出拥有独立快照，发布后不可修改；端口类型的语义与 readonly 数组由项目绑定负责。
+本地 `SimulationBackend` / `Observation` / `CommandSpec` 保留原注入式适配形态，实现在 `mujocosim.rsim.components`。Source 的 clock/端口在构造时固定，open 不改变接口。物理时间以源原生 stamp 发布，reset 以 episode 隔离历史；host monotonic TTL 在 owner 真正动作前再次检查。旧 `create_source` 委托同一逻辑，明确开启 legacy_continuous。
 
-本地 DifferentialDriveBackend 负责生成 world、转换 DriveCommand、映射 Pose/odom/imu/scan/image/depth 等数据。SimulationSource 只是 viewer/检查工具访问本地 Simulation 的便捷层。业务 demo 继续通过 devices.Chassis 操作，其参数和服务组装放在本地 apps。
+公共 `ChassisPortsDevice` 只需 pose/state/velocity；仿真专有 `SimulationDevice` 使用同一工厂声明增加 reset_request 和传感器。reset_request 的 set 只在 owner 完成 reset 后回 ACK，fallback 无副作用；旧 motion epoch 退休，新 controller epoch 才能恢复。`factory.service(source=shared)` 为同一源增加 RPC 外观，不能再次 build 世界。
 
-RSim `examples/mujoco_adapter.py` 是独立的单关节接入教程，用来说明如何自己实现协议；它不导入本项目或包含房间/桌椅/差速车。旧 rsim.apps.mujoco* 已移除，不能反向依赖本项目做隐藏转发。
+本地 `inspect` 回调在 owner 上执行且应返回拥有的数据快照。新 Source 不暴露 `.simulation`；只有过渡旧 facade 保留该访问，计划 0.4 退役。应用 viewer 也通过 inspect 创建/同步，不从客户端线程写 MjData。
 
 ## 验证与后续扩展
 
@@ -82,7 +86,7 @@ RSim `examples/mujoco_adapter.py` 是独立的单关节接入教程，用来说�
 
 ### 像素目标与实际轨迹拓扑
 
-`components.pixel_target.PixelTarget` 依赖同一个 source、mapper、navigator，输出 observation/targets/topology。capture 只配对 stamp、clock、episode 和标定一致的 RGBD，缓存只读图像及原始外参；`pixel_geometry.unproject_pixel` 将 `(row,column,-depth)` 送入 graphmap 内参，再用采集时的 camera-to-world Pose 变换。客户端各自持有默认帧 ID，旧帧在运动后保持几何含义，复位后失效。
+`rsim.components.pixel_target.PixelTarget` 依赖同一个 source、mapper、navigator，输出 observation/targets/topology。capture 只配对 stamp、clock、episode 和标定一致的 RGBD，缓存只读图像及原始外参；`pixel_geometry.unproject_pixel` 将 `(row,column,-depth)` 送入 graphmap 内参，再用采集时的 camera-to-world Pose 变换。客户端各自持有默认帧 ID，旧帧在运动后保持几何含义，复位后失效。
 
 `reachability.ReachabilityWorker` 在独立线程中构建连续点路网，以真实地面矩形并集、原生 MuJoCo 接触和点云扫掠检查建立当前起点的连通分量，再从按距离排序的目标候选中选取最近的已验证点。路线内部增加 6 cm 跟踪余量，仅在距实际起终点 15 cm 内渐变收窄，避免零宽切线路径导致局部控制停滞。`PhysicalProbe` 编译私有 MjModel/MjData，将机器人碰撞包络替换为竖直圆柱，复制当前 qpos 查询；绝不移动真实 Simulation。平地支撑按矩形并集的连续条带计算，不用可能漏过小缺口的支撑采样点。
 
@@ -90,6 +94,6 @@ RPC 仅入队/查询求解任务，不能在 `NavigationService.handle` 等待�
 
 `topology.WaypointTopology` 只接收真实 source.pose 历史，按路程/转弯离散化，记录有向实际轨迹。PixelTarget 只给已到达目标关联观测，不从规划路径造边。缺失序列、时间/位姿跳变切断轨迹，episode 变化清空图。World 退出保存外部 `map_output/topology.json`。查询精度、保守包络和单平面适用范围见 README。
 
-每次按改动跑本项目相关测试，必要时跑 RSim 的 test_mujoco_adapter。不得把平台、传输、共享存储或通用控制器回归并入这里的测试范围。应用 demo 是对本项目接入链的验收，不替代 RSim 自己的库验证。
+每次按改动跑本项目相关测试，工厂测试覆盖真实共享进程与端口子集，独立环境脚本验证轻量客户端。RSim 通用运行时回归仍由其仓库维护。应用 demo 是对本项目接入链的验收，不替代 RSim 自己的库验证。
 
 优先顺序：有第二个实际构型时添加 Robot；有第二种实际场景格式时添加 SceneBuilder；有新的传感器时扩展本地 sensors 和端口绑定。只有两种实现确实出现共同逻辑时再抽取基类或配置模式。保持现有默认 demo 和物理数据可复现，不为了未来假想接口扩大抽象层数。

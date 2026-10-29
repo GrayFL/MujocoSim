@@ -6,25 +6,20 @@ import os
 from pathlib import Path
 
 from rsim.runtime import Runtime
-from rsim.runtime.sharing import SharedProvider
 from rsim.transport.descriptor import TransportConfig
-from mujocosim.integrations.rsim import create_source as MuJoCo
+from mujocosim.rsim.drivers import MujocoChassisFactory
 from mujocosim.integrations.transport import configure_transport
-from rsim.drivers import Chassis as Provider
 from mujocosim.config import SensorConfig
 from mujocosim.deployment import DEFAULT_CACHE
 
 
 async def run(args):
     transport = configure_transport(TransportConfig('cyclonedds', args.domain))
-    source = MuJoCo(args.scene, cache_root=args.cache_dir, motion_enabled=args.enable_motion,
-                    hz=args.hz, sensors=SensorConfig(width=args.width, height=args.height))
-    shared = SharedProvider(source, key='mujoco:' + args.name, interface_version='mujoco-v1',
-                            provider_version=str((str(Path(args.scene).resolve()), args.width, args.height,
-                                                  args.enable_motion, args.hz)), transport=transport,
-                            log_path=args.log)
-    service = Provider(name=args.name, pose=shared.pose, velocity=shared.velocity, state=shared.state,
-                       motion_enabled=args.enable_motion, transport=transport)
+    factory = MujocoChassisFactory(args.scene, cache_root=args.cache_dir,
+                    motion_enabled=args.enable_motion, hz=args.hz,
+                    sensors=SensorConfig(width=args.width, height=args.height))
+    shared = factory.shared(key='mujoco:' + args.name, transport=transport, log_path=args.log)
+    service = factory.service(source=shared, name=args.name, transport=transport)
     async with Runtime(service) as runtime:
         await service.pose.get(timeout=30)
         status = dict(name=args.name, domain=args.domain, service_pid=os.getpid(),

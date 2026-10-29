@@ -110,3 +110,28 @@ def test_planning_selection_preserves_observations_and_coverage():
     assert len(selected) < len(original)
     assert cKDTree(original).query(selected)[0].max() == 0
     assert cKDTree(selected[:, :2]).query(original[:, :2])[0].max() <= math.sqrt(2)*.05
+
+
+def test_navigation_shared_view_uses_static_pose_clock_and_new_interface(tmp_path):
+    import uuid
+    from rsim.runtime.sharing import SharedProvider
+    from mujocosim.integrations.navigation import NavigationMap
+
+    make_room(tmp_path)
+    async def check():
+        name = 'world_' + uuid.uuid4().hex[:10]
+        transport = TransportConfig('cyclonedds', 63)
+        world = NavigationWorld(tmp_path, name=name, transport=transport,
+                                sensors=SensorConfig(width=80, height=60))
+        shared = SharedProvider(world, key='mujocosim-navigation:' + name,
+                                interface_version='mujocosim-navigation-v2',
+                                transport=transport, log_path=tmp_path/'navigation-worker.log')
+        view = NavigationMap(name, transport=transport)
+        async with Runtime(shared.state, view.pose, view.map):
+            pose = await view.pose.get(timeout=10)
+            mapped = await view.map.get(timeout=10)
+            assert pose.clock == 'simulation'
+            assert pose.metadata['pose_kind'] == 'ground_truth'
+            assert view.manifest['interface_version'] == 'mujocosim-navigation-v2'
+            assert mapped.data['episode'] == pose.metadata['episode'] == 0
+    asyncio.run(check())

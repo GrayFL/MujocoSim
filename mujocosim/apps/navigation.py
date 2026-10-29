@@ -113,8 +113,8 @@ async def run(args):
         output=str(output), map_output=map_output,
         sensors=SensorConfig(width=args.width, height=args.height), navigation=config)
     shared = SharedProvider(world, key='mujocosim-navigation:'+args.name,
-        interface_version='mujocosim-navigation-v1',
-        provider_version=str(('pixel-target-v1', str(Path(args.scene).resolve()), asdict(config), args.width, args.height,
+        interface_version='mujocosim-navigation-v2',
+        provider_version=str(('pixel-target-v2', str(Path(args.scene).resolve()), asdict(config), args.width, args.height,
                               args.enable_motion, args.headless, str(output), str(map_output))),
         transport=transport, log_path=str(output/'world.log'))
     # Export only requested ports. Map/path consumers in the notebook create

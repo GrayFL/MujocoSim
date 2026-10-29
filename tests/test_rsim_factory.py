@@ -74,9 +74,19 @@ def test_fingerprint_is_stable_sensitive_and_content_based(tmp_path):
     assert replace(factory, max_ttl=.25).fingerprint() != fingerprint
     assert replace(factory, physics=PhysicsConfig(timestep=.001)).fingerprint() != fingerprint
     assert replace(factory, robot=replace(factory.robot, config=replace(factory.robot.config, wheel_track=.6))).fingerprint() != fingerprint
+    (tmp_path/'provider.log').write_text('logging must not change device configuration')
+    assert factory.fingerprint() == fingerprint
     path = tmp_path/'scene.xml'
     path.write_text(path.read_text() + '\n')
     assert factory.fingerprint() != fingerprint
+
+
+def test_invalid_motion_permission_and_robot_settings_are_rejected(tmp_path):
+    factory = MujocoChassisFactory(scene_dir=tmp_path)
+    with pytest.raises(TypeError, match='booleans'):
+        replace(factory, motion_enabled='false')
+    with pytest.raises(ValueError, match='robot dimensions'):
+        replace(factory, robot=replace(factory.robot, config=replace(factory.robot.config, wheel_track=float('nan'))))
 
 
 def test_world_single_owner_snapshots_static_clock_and_native_reset(tmp_path, monkeypatch):

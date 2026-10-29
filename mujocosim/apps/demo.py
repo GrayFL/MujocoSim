@@ -15,8 +15,7 @@ import numpy as np
 from rsim.runtime import Runtime
 from rsim.core import VelocityCommand
 from rsim.devices import Chassis
-from mujocosim.integrations.rsim import create_source as MuJoCo
-from rsim.drivers import Chassis as ChassisProvider
+from mujocosim.rsim.drivers import MujocoChassisFactory
 from rsim.transport.descriptor import TransportConfig
 from mujocosim.config import SensorConfig
 from mujocosim.deployment import DEFAULT_CACHE
@@ -124,12 +123,12 @@ def save_run(sim, output, trajectory, scans, scan_poses, elapsed, mode):
 
 
 async def run(args, scene, preview_executor=None):
-    source = MuJoCo(scene_dir=scene, spawn=args.spawn,
+    factory = MujocoChassisFactory(scene_dir=scene, spawn=args.spawn,
                     sensors=SensorConfig(width=args.width, height=args.height), motion_enabled=True)
+    source = factory.build()
     transport = TransportConfig('inprocess')
     name = 'mujoco_' + uuid.uuid4().hex
-    provider = ChassisProvider(name=name, pose=source.pose, velocity=source.velocity,
-                               state=source.state, motion_enabled=True, transport=transport,
+    provider = factory.service(source=source, name=name, transport=transport,
                                control=dict(max_linear=.6, max_angular=1.2))
     chassis = Chassis(name, transport=transport)
     output = Path(args.output)
@@ -140,12 +139,13 @@ async def run(args, scene, preview_executor=None):
         return await asyncio.get_running_loop().run_in_executor(
             preview_executor, preview_sensors, frame, scan)
     async with Runtime(provider, chassis, source.scan):
-        print(f'Loaded {source.simulation.model.ngeom} geoms; control=rsim.devices.Chassis', flush=True)
+        ngeom = await source.inspect(lambda sim: sim.model.ngeom)
+        print(f'Loaded {ngeom} geoms; control=rsim.devices.Chassis', flush=True)
         viewer_context = nullcontext(None)
         if not args.headless:
             import mujoco.viewer
-            viewer_context = mujoco.viewer.launch_passive(source.simulation.model, source.simulation.data,
-                                                          key_callback=keys)
+            viewer_context = await source.inspect(lambda sim: mujoco.viewer.launch_passive(
+                sim.model, sim.data, key_callback=keys))
             print('Up/Down forward/back, Left/Right turn, Space stop, R reset, P snapshot, Q quit.', flush=True)
         trajectory, scans, scan_poses = [], [], []
         state_cursor = scan_cursor = 0
@@ -155,7 +155,8 @@ async def run(args, scene, preview_executor=None):
             if viewer is not None:
                 with viewer.lock():
                     viewer.opt.geomgroup[:] = [1, 1, 0, 0, 0, 0]
-                    viewer.cam.lookat[:] = [*source.simulation.pose2d[:2], .4]
+                    pose = (await source.pose.get()).data.position
+                    viewer.cam.lookat[:] = [*pose[:2], .4]
                     viewer.cam.distance, viewer.cam.azimuth, viewer.cam.elevation = 4., 135, -55
             # Window/GL startup can take longer than the controller's freshness
             # limit. Warm them with no live motion lease, then wait for physics.

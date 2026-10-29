@@ -27,14 +27,13 @@ async def run(args):
     if args.connect:
         return await run_connected(args)
     # Only this deployment assembly knows the backend; exercise() does not.
-    from mujocosim.integrations.rsim import create_source as MuJoCo
-    from rsim.drivers import Chassis as Provider
+    from mujocosim.rsim.drivers import MujocoChassisFactory
     from rsim.transport.descriptor import TransportConfig
-    source = MuJoCo(args.scene, cache_root=args.cache_dir, motion_enabled=True)
+    factory = MujocoChassisFactory(args.scene, cache_root=args.cache_dir, motion_enabled=True)
+    source = factory.build()
     transport = TransportConfig('inprocess')
     name = 'mujoco_motion_' + uuid.uuid4().hex
-    provider = Provider(name=name, pose=source.pose, velocity=source.velocity, state=source.state,
-                        transport=transport, motion_enabled=True)
+    provider = factory.service(source=source, name=name, transport=transport)
     chassis = Chassis(name, transport=transport)
     async with Runtime(provider, chassis):
         result = await exercise(chassis)
@@ -49,16 +48,14 @@ async def run(args):
 async def run_connected(args):
     # This path imports neither the driver nor MuJoCo and can use another Python.
     from rsim.transport.descriptor import TransportConfig
-    from rsim.runtime.sharing import SharedComponent, PortSpec
+    from mujocosim.rsim.devices import SimulationDevice
     from mujocosim.apps.recording import snapshot
     from mujocosim.integrations.transport import configure_transport
     transport = configure_transport(TransportConfig('cyclonedds', args.domain))
     chassis = Chassis(args.connect, transport=transport)
-    sensors = SharedComponent(key='mujoco:' + args.connect, interface_version='mujoco-v1',
-        ports={name: PortSpec(history_capacity=8) for name in ('image', 'depth', 'camera_info', 'scan')},
-        transport=transport)
+    sensors = SimulationDevice(key='mujoco:' + args.connect, transport=transport)
     # Warm dynamic RGBD before acquiring a motion lease.
-    async with Runtime(chassis, sensors):
+    async with Runtime(chassis, sensors.image, sensors.depth, sensors.camera_info, sensors.scan):
         await sensors.image.get(timeout=30)
         result = await exercise(chassis)
         result.update(client_pid=os.getpid(), physics_pid=sensors.manifest['pid'], python=sys.version,

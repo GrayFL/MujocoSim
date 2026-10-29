@@ -11,7 +11,7 @@ from typing import ClassVar
 from rsim.core.commands import CommandRejected, VelocityCommand
 from rsim.runtime.sharing import PortSpec, SharedProvider
 from mujocosim.config import PhysicsConfig, SensorConfig
-from mujocosim.robots.differential_drive import DifferentialDrive
+from mujocosim.robots.differential_drive import DifferentialDrive, DifferentialDriveConfig
 
 
 def validate_velocity(value):
@@ -26,21 +26,36 @@ def zero_velocity(value):
 def _resource_digest(path):
     """Explicit provider-side content identity; no scene or engine import."""
     path = Path(path).expanduser().resolve()
-    files = sorted(p for p in path.rglob('*') if p.is_file()) if path.is_dir() else [path]
-    if path.is_file() and path.suffix == '.json':
+    def resources(item, seen):
+        if item in seen:
+            return
+        seen.add(item)
+        if item.is_dir():
+            # Match prepared-scene inputs consumed by Simulation, excluding
+            # logs, recordings and the optional generated world.xml.
+            files = [item/name for name in ('scene.xml', 'metadata.json', 'navigation.npz')]
+            files.extend(p for p in item.iterdir() if p.suffix.lower() in ('.obj', '.png'))
+            for file in files:
+                yield from resources(file, seen)
+            return
+        yield item
+        if item.suffix.lower() not in ('.json', '.gltf'):
+            return
         def sources(value):
             if isinstance(value, dict):
                 for name, item in value.items():
-                    if name == 'source' and isinstance(item, str):
-                        yield (path.parent / item).resolve()
+                    if name in ('source', 'base_scene', 'uri') and isinstance(item, str):
+                        if not item.startswith('data:'):
+                            yield item
                     else:
                         yield from sources(item)
             elif isinstance(value, list):
                 for item in value:
                     yield from sources(item)
-        files.extend(sources(json.loads(path.read_text(encoding='utf-8'))))
+        for relative in sources(json.loads(item.read_text(encoding='utf-8'))):
+            yield from resources((item.parent/relative).resolve(), seen)
     digest = hashlib.sha256()
-    for item in sorted(set(files)):
+    for item in sorted(set(resources(path, set()))):
         digest.update(str(item).encode('utf-8'))
         with item.open('rb') as stream:
             for block in iter(lambda: stream.read(1024*1024), b''):
@@ -89,12 +104,21 @@ class MujocoChassisFactory:
             if value is not None:
                 object.__setattr__(self, name, str(Path(value).expanduser().resolve()))
         if self.spawn is not None:
-            spawn = tuple(self.spawn)
+            spawn = tuple(float(v) for v in self.spawn)
             if len(spawn) != 3 or not all(math.isfinite(v) for v in spawn):
                 raise ValueError('spawn must be finite [x, y, yaw_radians]')
             object.__setattr__(self, 'spawn', spawn)
-        if not isinstance(self.robot, DifferentialDrive):
+        if (not isinstance(self.robot, DifferentialDrive)
+                or not isinstance(self.robot.config, DifferentialDriveConfig)):
             raise TypeError('MujocoChassisFactory requires an immutable DifferentialDrive model')
+        if not all(math.isfinite(v) and v > 0 for v in vars(self.robot.config).values()):
+            raise ValueError('robot dimensions and limits must be finite and positive')
+        if type(self.motion_enabled) is not bool or type(self.rebuild) is not bool:
+            raise TypeError('motion_enabled and rebuild must be booleans')
+        if self.scene_revision is not None and not isinstance(self.scene_revision, str):
+            raise TypeError('scene_revision must be an immutable version string')
+        if self.floor_height is not None and not math.isfinite(self.floor_height):
+            raise ValueError('floor_height must be finite')
         if not isinstance(self.sensors, SensorConfig) or not isinstance(self.physics, PhysicsConfig):
             raise TypeError('sensors/physics must be immutable SensorConfig/PhysicsConfig')
         if not all(math.isfinite(v) and v > 0 for v in
