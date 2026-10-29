@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -197,6 +198,132 @@ def test_partial_initialization_and_cancelled_reset_cleanup():
             assert (await world.state.get()).metadata['episode'] == 1
             assert all(frame.metadata['episode'] == 1 for frame in world.state.frames)
         assert backend.closed == 1
+    asyncio.run(check())
+
+
+class BlockingResetBackend:
+    """Real owner-thread synchronization without a renderer or wall-time race."""
+    def __init__(self):
+        self.entered, self.release = threading.Event(), threading.Event()
+        self.stamp, self.closed = 0, 0
+        self.thread_ids, self.events = set(), []
+        self.sample_failed = False
+
+    def record(self, event):
+        self.thread_ids.add(threading.get_ident())
+        self.events.append(event)
+
+    def open(self):
+        self.record('open')
+
+    def sample(self, demand, force=False):
+        self.record('sample')
+        if self.sample_failed:
+            raise ValueError('snapshot failed after reset')
+        return Observation(self.stamp, {'state': {}})
+
+    def step(self, duration, commands):
+        self.record('step')
+        self.stamp += duration
+
+    def reset(self):
+        self.record('reset-start')
+        self.entered.set()
+        assert self.release.wait(1), 'test must release the native reset'
+        self.stamp = 0
+        self.record('reset-done')
+
+    def stop(self):
+        self.record('stop')
+
+    def close(self):
+        self.record('close')
+        self.closed += 1
+
+
+async def cancel_reset_twice(backend, task):
+    async with asyncio.timeout(.5):
+        while not backend.entered.is_set():
+            await asyncio.sleep(.001)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done(), 'cancellation must wait for the native transaction'
+
+
+def test_reset_multiple_cancellations_preserve_episode_transaction():
+    async def check():
+        backend = BlockingResetBackend()
+        world = MuJoCoSource(lambda: backend, outputs={'state': 8})
+        async with Runtime(world.state):
+            await world.pause()
+            task = asyncio.create_task(world.reset())
+            try:
+                await cancel_reset_twice(backend, task)
+            finally:
+                backend.release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            frame = await world.state.get()
+            assert frame.stamp_ns == 0 and frame.metadata['episode'] == 1
+            assert all(frame.metadata['episode'] == 1 for frame in world.state.frames)
+            assert not world._reset_tasks and not world._resetting
+            assert len(backend.thread_ids) == 1
+            assert threading.get_ident() not in backend.thread_ids
+        assert backend.closed == 1 and world._executor is None
+    asyncio.run(check())
+
+
+def test_runtime_close_joins_cancelled_reset_before_destroying_owner():
+    async def check():
+        backend = BlockingResetBackend()
+        world = MuJoCoSource(lambda: backend, outputs={'state': 8})
+        publish = world._publish
+        async def tracked_publish(observation):
+            await publish(observation)
+            if world._episode:
+                backend.events.append('episode-published')
+        world._publish = tracked_publish
+        runtime = Runtime(world.state)
+        async with runtime:
+            await world.pause()
+            task = asyncio.create_task(world.reset())
+            try:
+                await cancel_reset_twice(backend, task)
+                closing = asyncio.create_task(runtime.aclose())
+                await asyncio.sleep(.01)
+                assert not closing.done() and backend.closed == 0
+            finally:
+                backend.release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await closing
+        assert backend.events.index('reset-done') < backend.events.index('episode-published')
+        assert backend.events.index('episode-published') < backend.events.index('close')
+        assert world._executor is None and not world._reset_tasks and backend.closed == 1
+        assert len(backend.thread_ids) == 1
+    asyncio.run(check())
+
+
+def test_failed_reset_snapshot_aborts_episode_until_successful_reset():
+    async def check():
+        backend = BlockingResetBackend()
+        backend.release.set()
+        world = MuJoCoSource(lambda: backend, outputs={'state': 8})
+        async with Runtime(world.state):
+            await world.pause()
+            assert world.state.frames
+            backend.sample_failed = True
+            with pytest.raises(ValueError, match='snapshot failed'):
+                await world.reset()
+            assert not world.state.frames and world._paused and world._episode == 1
+            with pytest.raises(RuntimeError, match='successful reset'):
+                await world.resume()
+            backend.sample_failed = False
+            assert await world.reset() == {'episode': 2, 'step_index': 0}
+            assert (await world.state.get()).metadata['episode'] == 2
+            await world.resume()
     asyncio.run(check())
 
 

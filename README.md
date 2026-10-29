@@ -138,7 +138,7 @@ async with Runtime(view.state, view.reset_request):
     acknowledgement = await view.reset()  # 完成 reset 和首帧发布后返回 episode
 ```
 
-reset 保留原生物理时间（重新从零开始），增加 episode，清除旧历史并退休旧命令 epoch；控制器需使用新 epoch 才能恢复。暂停同样清除执行命令，恢复不会续命旧命令。`inspect(callback)` 是本地 owner 线程工具入口，回调应返回快照，不能把活动 MjData 交给其他线程。新组件不提供 `.simulation` 公共可变视图。
+reset 保留原生物理时间（重新从零开始），增加 episode，清除旧历史并退休旧命令 epoch；控制器需使用新 epoch 才能恢复。 已开始的 reset 会完成 episode 事务后再传播调用方取消，关闭会等待事务结束。若物理 reset 后采样失败，清空历史并保持暂停，必须先成功 reset 再显式 resume。暂停同样清除执行命令，恢复不会续命旧命令。`inspect(callback)` 是本地 owner 线程工具入口，回调应返回快照，不能把活动 MjData 交给其他线程。新组件不提供 `.simulation` 公共可变视图。
 
 旧 `mujocosim.integrations.rsim.create_source` 保留到 0.4 的过渡入口，委托同一工厂并显式采用 `legacy_continuous` 时间策略；旧直接 `.simulation` 访问仅存在于该兼容 facade。停止 Provider 后整体更新 RSim 与 MujocoSim，再按新工厂重建，不恢复旧进程的 pickle。 点云导航共享视图同步升级为 `mujocosim-navigation-v2`，旧客户端须更新后重新连接。
 

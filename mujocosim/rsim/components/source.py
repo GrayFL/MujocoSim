@@ -41,6 +41,9 @@ class MuJoCoSource(Component):
         self.backend = None
         self._executor = self._command_lock = self._access = None
         self._commands = {}
+        self._reset_tasks = set()
+        self._close_task = None
+        self._reset_failed = False
         self._resetting = self._stopping = self._paused = False
         self._episode = self._step_index = self._offset_ns = 0
         self._last_stamp_ns = -1
@@ -87,6 +90,8 @@ class MuJoCoSource(Component):
         self._command_lock = threading.Lock()
         self._access = asyncio.Lock()
         self._resetting = self._stopping = self._paused = False
+        self._reset_failed = False
+        self._close_task = None
         self._offset_ns = self._episode = self._step_index = 0
         self._last_stamp_ns = -1
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='mujocosim-world')
@@ -182,12 +187,30 @@ class MuJoCoSource(Component):
     async def reset(self, *args, **kwargs):
         # A cancelled request must still finish the episode transition once the
         # owner has begun resetting; the next tick cannot observe half a reset.
+        if self._access is None or self._stopping:
+            raise RuntimeError('MuJoCo source is not running')
         task = asyncio.create_task(self._reset(*args, **kwargs))
+        self._reset_tasks.add(task)
         try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            await task
-            raise
+            return await self._finish_transaction(task)
+        finally:
+            self._reset_tasks.discard(task)
+
+    @staticmethod
+    async def _finish_transaction(task):
+        """Keep native cleanup isolated from any number of caller cancellations."""
+        cancelled = False
+        while True:
+            try:
+                result = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
 
     async def _reset(self, *args, _deadline_ns=None, **kwargs):
         if self._access is None or self._stopping:
@@ -198,9 +221,13 @@ class MuJoCoSource(Component):
             self._resetting = True
             self._invalidate_commands()
             demand = self.demand_snapshot()
+            previous_episode = self._episode
+            started = False
             def reset_backend():
+                nonlocal started
                 if _deadline_ns is not None and _deadline_ns <= time.monotonic_ns():
                     raise CommandRejected('reset request expired', reason='expired')
+                started = True
                 self.backend.stop()
                 self.backend.reset(*args, **kwargs)
                 return self._sample(demand, True)
@@ -218,7 +245,19 @@ class MuJoCoSource(Component):
                 for port in self.outputs.values():
                     await port.clear_history()
                 await self._publish(observation)
+                self._reset_failed = False
                 return {'episode': self._episode, 'step_index': self._step_index}
+            except BaseException:
+                # The backend may already have reset even if sampling failed.
+                # Never resume from a snapshot of the previous physical world.
+                if started:
+                    self._paused = self._reset_failed = True
+                    self._episode = previous_episode + 1
+                    self._step_index = 0
+                    self._last_stamp_ns = -1
+                    for port in self.outputs.values():
+                        await port.clear_history()
+                raise
             finally:
                 self._resetting = False
 
@@ -245,13 +284,24 @@ class MuJoCoSource(Component):
 
     async def resume(self):
         async with self._access:
+            if self._reset_failed:
+                raise RuntimeError('reset failed; complete a successful reset before resume')
             self._paused = False
 
     async def close(self):
         if self._executor is None:
             return
-        self._stopping = True
-        self._invalidate_commands()
+        if self._close_task is None:
+            self._stopping = True
+            self._invalidate_commands()
+            self._close_task = asyncio.create_task(self._close_resources())
+        await self._finish_transaction(self._close_task)
+
+    async def _close_resources(self):
+        # Public reset requests need not be Component tasks. Join their native
+        # operation and episode publication before destroying the engine.
+        if self._reset_tasks:
+            await asyncio.gather(*tuple(self._reset_tasks), return_exceptions=True)
         def cleanup():
             if self.backend is not None:
                 try:
