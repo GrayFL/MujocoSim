@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
+from functools import partial
 import hashlib
 import json
 import math
@@ -162,7 +163,16 @@ class MujocoChassisFactory:
     def signature(self):
         return self.fingerprint()
 
-    def build_backend(self):
+    def _checked_fingerprint(self, expected=None):
+        actual = self.fingerprint()
+        if expected is not None and actual != expected:
+            raise ValueError('scene resources changed after build/shared description; '
+                             'create a new build/shared description')
+        return actual
+
+    def build_backend(self, *, expected_fingerprint=None):
+        # Recheck on the owner immediately before constructing engine resources.
+        self._checked_fingerprint(expected_fingerprint)
         from mujocosim.rsim.components.backend import DifferentialDriveBackend
         options = {name: getattr(self, name) for name in
                    ('scene', 'scene_dir', 'up_axis', 'floor_height', 'pitch', 'rebuild',
@@ -171,14 +181,15 @@ class MujocoChassisFactory:
             options['cache_root'] = self.cache_root
         return DifferentialDriveBackend(**options)
 
-    def _build(self, *, legacy_access=False):
+    def _build(self, *, legacy_access=False, expected_fingerprint=None):
+        fingerprint = self._checked_fingerprint(expected_fingerprint)
         from mujocosim.rsim.components.protocol import CommandSpec
         from mujocosim.rsim.components.source import LegacySimulationSource, SimulationSource
         cls = LegacySimulationSource if legacy_access else SimulationSource
-        return cls(self.build_backend, ports=self.specs(),
+        return cls(partial(self.build_backend, expected_fingerprint=fingerprint), ports=self.specs(),
                    commands={'velocity': CommandSpec(VelocityCommand(), zero_velocity, validate_velocity)},
                    hz=self.hz, speedup=self.speedup, motion_enabled=self.motion_enabled,
-                   clock=self.clock, reset_policy=self.reset_policy, configuration=self.fingerprint())
+                   clock=self.clock, reset_policy=self.reset_policy, configuration=fingerprint)
 
     def build(self):
         return self._build()
@@ -186,9 +197,11 @@ class MujocoChassisFactory:
     __call__ = build
 
     def shared(self, *, key, transport=None, options=None, log_path=None):
-        return SharedProvider(factory=self.build, ports=self.specs(), key=key,
+        fingerprint = self.fingerprint()
+        return SharedProvider(factory=partial(self._build, expected_fingerprint=fingerprint),
+                              ports=self.specs(), key=key,
                               interface_version=self.INTERFACE_VERSION,
-                              provider_version=self.fingerprint(), transport=transport,
+                              provider_version=fingerprint, transport=transport,
                               options=options, log_path=log_path)
 
     def device(self, *, key, transport=None, options=None):

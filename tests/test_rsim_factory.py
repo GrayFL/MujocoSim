@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from rsim import Runtime
-from rsim.core import CommandEnvelope, CommandRejected, VelocityCommand
+from rsim.core import CommandEnvelope, CommandRejected, ComponentError, VelocityCommand
 from rsim.runtime.sharing import component_ports
 from mujocosim.config import PhysicsConfig, SensorConfig
 from mujocosim.rsim import MujocoChassisFactory, SimulationDevice
@@ -56,7 +56,8 @@ def test_factory_is_immutable_lazy_and_owns_the_only_declaration(tmp_path, monke
     shared = factory.shared(key='lazy-world')
     device = factory.device(key='lazy-world')
     assert shared.port_specs == device.port_specs == factory.specs()
-    assert shared.factory.__self__ is factory
+    assert shared.factory.func.__self__ is factory
+    assert shared.factory.keywords['expected_fingerprint'] == shared.provider_version
     assert shared.connection is device.connection is None
     specs = factory.specs()
     specs.pop('pose')
@@ -80,6 +81,42 @@ def test_fingerprint_is_stable_sensitive_and_content_based(tmp_path):
     path = tmp_path/'scene.xml'
     path.write_text(path.read_text() + '\n')
     assert factory.fingerprint() != fingerprint
+
+
+def test_local_open_rechecks_scene_identity_before_engine_creation(tmp_path):
+    make_room(tmp_path)
+    factory = MujocoChassisFactory(scene_dir=tmp_path)
+    world = factory.build()
+    path = tmp_path/'scene.xml'
+    path.write_text(path.read_text() + '\n')
+    async def check():
+        with pytest.raises(ValueError, match='scene resources changed'):
+            async with Runtime(world.state):
+                pytest.fail('changed scene became ready under the old identity')
+        assert world.backend is None and world._executor is None
+    asyncio.run(check())
+
+
+def test_shared_description_rejects_changed_scene_before_worker_ready(tmp_path):
+    make_room(tmp_path)
+    factory = MujocoChassisFactory(scene_dir=tmp_path)
+    key = 'changed-scene:' + uuid.uuid4().hex
+    log = tmp_path/'worker.log'
+    old = factory.shared(key=key, log_path=log)
+    path = tmp_path/'scene.xml'
+    path.write_text(path.read_text() + '\n')
+    async def check():
+        with pytest.raises(ComponentError, match='scene resources changed'):
+            async with Runtime(old.state):
+                pytest.fail('changed scene became ready under the advertised old fingerprint')
+        assert 'scene resources changed' in log.read_text()
+        assert not old.directory.exists()
+        current = factory.shared(key=key, log_path=log)
+        assert current.provider_version != old.provider_version
+        async with Runtime(current.state):
+            assert current.manifest['provider_version'] == factory.fingerprint()
+            assert (await current.state.get(timeout=5)).metadata['episode'] == 0
+    asyncio.run(check())
 
 
 def test_invalid_motion_permission_and_robot_settings_are_rejected(tmp_path):

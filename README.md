@@ -125,7 +125,7 @@ async with Runtime(chassis.pose, chassis.state, chassis.velocity):
     await chassis.velocity.set(VelocityCommand(.2, .0), ttl=.2)
 ```
 
-RSim 组合要求 `rsim>=0.4.0`（包含端口校验、episode历史隔离与通用客户端）。完整端口只在 `mujocosim.rsim.drivers.chassis.MujocoChassisFactory.port_specs()` 声明。`build()` 构造本地组件，`shared(key=...)` 构造显式启动描述，`device(key=...)` 只连接已运行实例。`INTERFACE_VERSION='chassis-ports-v1'` 与 pyrobo 内存设备一致；共同端口为 `pose/state/velocity`。`pose` 明确是 ground truth，地图和导航输入由应用注入。
+RSim 组合要求 `rsim>=0.4.0`（包含端口校验、episode历史隔离与通用客户端）。完整端口只在 `mujocosim.rsim.drivers.chassis.MujocoChassisFactory.port_specs()` 声明。 `build/shared` 捕获场景内容指纹，并在 owner 创建资源前复核；文件变化后须重新创建描述。显式 `scene_revision` 由调用方负责代表稳定资源版本。`build()` 构造本地组件，`shared(key=...)` 构造显式启动描述，`device(key=...)` 只连接已运行实例。`INTERFACE_VERSION='chassis-ports-v1'` 与 pyrobo 内存设备一致；共同端口为 `pose/state/velocity`。`pose` 明确是 ground truth，地图和导航输入由应用注入。
 
 `factory.service(source=shared, ...)` 可将同一个 World 包装成原 `rsim.devices.Chassis` 的 RPC 服务；Shared Ports 与 RPC 是不同接口，不能交换客户端。速度默认 TTL 上限 .5 s，运动默认关闭。一个 World 的物理、传感器、reset 和 inspect 始终由同一 owner 线程串行处理；数据读取不推进物理。
 
