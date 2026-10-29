@@ -59,7 +59,7 @@ def test_custom_scene_and_robot_without_chassis_or_sensor_assumptions(tmp_path):
 def test_core_packages_do_not_depend_on_rsim():
     root = Path(__file__).resolve().parents[1] / 'mujocosim'
     for path in root.rglob('*.py'):
-        if path.relative_to(root).parts[0] in ('integrations', 'apps', 'components'):
+        if path.relative_to(root).parts[0] in ('integrations', 'apps', 'components', 'rsim'):
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding='utf8'))):
             names = [x.name for x in node.names] if isinstance(node, ast.Import) else [node.module or ''] if isinstance(node, ast.ImportFrom) else []

@@ -27,13 +27,19 @@ class Simulation:
         # workspace/source paths without chdir, copies, or environment changes.
         assets = {p.name: p.read_bytes() for p in self.scene_dir.iterdir()
                   if p.suffix.lower() in (".obj", ".png")}
-        self.model = mujoco.MjModel.from_xml_string(xml, assets=assets)
-        self.data = mujoco.MjData(self.model)
-        self.robot = robot.bind(self.model, self.data)
-        self.body_id = self.robot.body_id
-        self.sensor_suite = SensorSuite(self.model, self.data, sensors) if sensors else None
-        self.navigation = np.load(self.scene_dir / "navigation.npz")
-        self.reset(spawn)
+        self.model = self.data = self.robot = self.sensor_suite = self.navigation = None
+        self._closed = False
+        try:
+            self.model = mujoco.MjModel.from_xml_string(xml, assets=assets)
+            self.data = mujoco.MjData(self.model)
+            self.robot = robot.bind(self.model, self.data)
+            self.body_id = self.robot.body_id
+            self.sensor_suite = SensorSuite(self.model, self.data, sensors) if sensors else None
+            self.navigation = np.load(self.scene_dir / "navigation.npz")
+            self.reset(spawn)
+        except BaseException:
+            self.close()
+            raise
 
     def reset(self, spawn=None):
         spawn = np.asarray(self.metadata["spawn"] if spawn is None else spawn, float)
@@ -144,10 +150,19 @@ class Simulation:
         return self._renderer.render().copy()
 
     def close(self):
-        self.robot.stop()
-        if self.sensor_suite is not None:
-            self.sensor_suite.close()
-        self.navigation.close()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.robot is not None:
+                self.robot.stop()
+        finally:
+            try:
+                if self.sensor_suite is not None:
+                    self.sensor_suite.close()
+            finally:
+                if self.navigation is not None:
+                    self.navigation.close()
 
     def __enter__(self):
         return self
