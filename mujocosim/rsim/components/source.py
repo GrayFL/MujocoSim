@@ -560,7 +560,15 @@ class MuJoCoSource(Component):
             return None
         if not isinstance(value, dict) or set(value) != {'context', 'command_id', 'requested_substeps'}:
             raise CommandRejected('advance request requires context, command_id and requested_substeps')
-        return await self.advance(**value, _deadline_ns=envelope.deadline_ns)
+        try:
+            return await self.advance(**value, _deadline_ns=envelope.deadline_ns)
+        except CommandRejected as error:
+            if error.reason == 'retired':
+                # This is a source step identity, not the independent controller
+                # epoch of the management transport. Do not retire that channel
+                # when its caller queries an old/unknown physical transaction.
+                raise CommandRejected(str(error), reason='stale_context') from error
+            raise
 
     async def _inspect_request(self, envelope):
         if envelope.value is None:

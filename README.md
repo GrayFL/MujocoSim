@@ -169,7 +169,7 @@ async with Runtime(view.state, view.velocity, view.advance_request, view.inspect
 
 `context` 是 `{session, episode, step_index}`，`command_id` 是 `{controller_id, controller_epoch, sequence}`。命令接纳回执还包含原始主机 `deadline_ns`、`source_deadline_ns` 和 `port`；只有 owner 实际执行源期限时 `source_deadline_ns` 才非空，无显式源期限的 realtime/controlled 命令返回 null。advance 请求包含 `context/command_id/requested_substeps`；`requested_substeps` 计固定物理 dt 次数，成功只增加一个控制 step_index。默认最多 1000 个子步，可通过 `max_substeps` 配置。
 
-只有全部积分和快照发布完成才返回 `PhysicsAdvanced`：其中 `request_context` 是 k，`context` 是 k+1，同时给出命令身份、请求/实际子步数、累计 `physical_substeps`、源 `stamp_ns`、`phase='READY'` 和状态摘要。相同请求重试返回原回执，即使原命令 TTL 已过期；同一 context 换命令或子步数会被拒绝。默认缓存最近 32 个请求，可用 `ack_capacity` 配置；被淘汰的旧步只能拒绝，不能重新执行。
+只有全部积分和快照发布完成才返回 `PhysicsAdvanced`：其中 `request_context` 是 k，`context` 是 k+1，同时给出命令身份、请求/实际子步数、累计 `physical_substeps`、源 `stamp_ns`、`phase='READY'` 和状态摘要。相同请求重试返回原回执，即使原命令 TTL 已过期；同一 context 换命令或子步数会被拒绝。默认缓存最近 32 个请求，可用 `ack_capacity` 配置；被淘汰的旧步只能拒绝，不能重新执行。管理端口对旧或未知 source context 返回 `CommandRejected(reason='stale_context')`，同一管理连接仍可发送新 context；运动控制器 epoch 的退役仍返回 `retired`。
 
 每个子步前同时复核主机 monotonic TTL 和可选的 `SourceCommandBound`。后者保留提交时的源 context/clock/deadline，接纳时不重新锚定；实时模式同样检查。没有显式源期限的加速命令，还保留按接纳时剩余主机预算和倍率计算的固定源期限。部分积分、请求过期、命令身份不匹配或引擎失败会进入 `ABORTED`，停止后续 advance，恢复需要 reset。`describe/synchronize` 返回真实已知的 stamp、累计子步和 `last_result.kind='PhysicsAborted'`；原生状态无法读取时 `state_known=false`，未知数值为 null，不能视为零步。
 
