@@ -173,7 +173,7 @@ async with Runtime(view.state, view.velocity, view.advance_request, view.inspect
 
 每个子步前同时复核主机 monotonic TTL 和可选的 `SourceCommandBound`。后者保留提交时的源 context/clock/deadline，接纳时不重新锚定；实时模式同样检查。没有显式源期限的加速命令，还保留按接纳时剩余主机预算和倍率计算的固定源期限。部分积分、请求过期、命令身份不匹配或引擎失败会进入 `ABORTED`，停止后续 advance，恢复需要 reset。`describe/synchronize` 返回真实已知的 stamp、累计子步和 `last_result.kind='PhysicsAborted'`；原生状态无法读取时 `state_known=false`，未知数值为 null，不能视为零步。
 
-调用方取消会等正在进行的物理事务完成或 ABORTED 后再传播。ACK 丢失不代表没有推进；先 synchronize，再用完全相同的请求恢复缓存结果或显式 reset。`abort(reason)` 可主动终止会话。完整 `SimulationDevice` 需要新管理端口；旧 Provider 必须停止并用新工厂重建，通用 Chassis 子集保持兼容。
+调用方取消会等正在进行的物理事务完成或 ABORTED 后再传播。ACK 丢失不代表没有推进；先 synchronize，再用完全相同的请求恢复缓存结果或显式 reset。`abort(reason)` 可主动终止会话。ABORTED 状态的远端 resume 返回普通 `CommandRejected`，同一连接仍可 reset 后恢复；本地 `source.resume()` 保留 `RuntimeError` 契约，其他 owner 故障不会被当成普通状态拒绝隐藏。完整 `SimulationDevice` 需要新管理端口；旧 Provider 必须停止并用新工厂重建，通用 Chassis 子集保持兼容。
 
 服务 CLI 同样接受 `--scheduling realtime|accelerated|controlled` 和 `--speedup N`。这些接口提供受控物理事务；计算阶段之间的锁步顺序由应用的 RSim stepper 显式协调。
 

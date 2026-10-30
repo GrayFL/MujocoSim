@@ -24,6 +24,10 @@ class _PhysicsSuspended(RuntimeError):
     """An explicit control boundary stopped a continuous physics batch."""
 
 
+class _ResumeRejected(RuntimeError):
+    """Expected lifecycle refusal; retain the local RuntimeError contract."""
+
+
 class MuJoCoSource(Component):
     """Owned backend runtime; all engine operations are serialized on one thread.
 
@@ -590,7 +594,12 @@ class MuJoCoSource(Component):
             return await self.set_rate(value.get('rate'), _deadline_ns=envelope.deadline_ns)
         if operation == 'abort':
             return await self.abort(value.get('reason', 'caller aborted'), _deadline_ns=envelope.deadline_ns)
-        return await getattr(self, operation)(_deadline_ns=envelope.deadline_ns)
+        try:
+            return await getattr(self, operation)(_deadline_ns=envelope.deadline_ns)
+        except _ResumeRejected as error:
+            # A rejected transition is a command response. Other RuntimeErrors
+            # remain owner failures and must not be hidden by this boundary.
+            raise CommandRejected(str(error)) from error
 
     def _invalidate_commands(self):
         self._staged_context = None
@@ -759,7 +768,7 @@ class MuJoCoSource(Component):
         async with self._management:
             self._check_deadline(deadline_ns)
             if operation == 'resume' and (self._reset_failed or self._phase == 'ABORTED'):
-                raise RuntimeError('source aborted; complete a successful reset before resume')
+                raise _ResumeRejected('source aborted; complete a successful reset before resume')
             if operation == 'set_rate' and self._phase == 'ABORTED':
                 raise CommandRejected('source aborted; reset before changing the rate')
             if operation == 'resume' and not self._paused:
