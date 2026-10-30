@@ -167,7 +167,7 @@ async with Runtime(view.state, view.velocity, view.advance_request, view.inspect
     assert advanced['kind'] == 'PhysicsAdvanced'
 ```
 
-`context` 是 `{session, episode, step_index}`，`command_id` 是 `{controller_id, controller_epoch, sequence}`。命令接纳回执还包含原始主机 `deadline_ns`、`source_deadline_ns` 和 `port`。advance 请求包含 `context/command_id/requested_substeps`；`requested_substeps` 计固定物理 dt 次数，成功只增加一个控制 step_index。默认最多 1000 个子步，可通过 `max_substeps` 配置。
+`context` 是 `{session, episode, step_index}`，`command_id` 是 `{controller_id, controller_epoch, sequence}`。命令接纳回执还包含原始主机 `deadline_ns`、`source_deadline_ns` 和 `port`；只有 owner 实际执行源期限时 `source_deadline_ns` 才非空，无显式源期限的 realtime/controlled 命令返回 null。advance 请求包含 `context/command_id/requested_substeps`；`requested_substeps` 计固定物理 dt 次数，成功只增加一个控制 step_index。默认最多 1000 个子步，可通过 `max_substeps` 配置。
 
 只有全部积分和快照发布完成才返回 `PhysicsAdvanced`：其中 `request_context` 是 k，`context` 是 k+1，同时给出命令身份、请求/实际子步数、累计 `physical_substeps`、源 `stamp_ns`、`phase='READY'` 和状态摘要。相同请求重试返回原回执，即使原命令 TTL 已过期；同一 context 换命令或子步数会被拒绝。默认缓存最近 32 个请求，可用 `ack_capacity` 配置；被淘汰的旧步只能拒绝，不能重新执行。
 

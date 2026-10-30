@@ -193,7 +193,10 @@ class MuJoCoSource(Component):
             spec.validate(envelope.value)
         if not self.motion_enabled and not spec.is_safe(envelope.value):
             raise CommandRejected('active commands require motion_enabled=True')
+        generation = (self._instance_id, self._episode)
         async with self._access:
+            if generation != (self._instance_id, self._episode):
+                raise CommandRejected('command source generation retired while waiting for owner', reason='retired')
             if self._resetting or self._stopping or self._paused or self._phase == 'ABORTED':
                 raise CommandRejected('simulation is resetting, paused, stopping or aborted')
             now = time.monotonic_ns()
@@ -204,8 +207,11 @@ class MuJoCoSource(Component):
                 if not callable(getattr(self.backend, 'step_guarded', None)):
                     raise CommandRejected('source-bound commands require a guarded backend')
                 envelope.source_bound.check(self.context, clock=self.clock, stamp_ns=next_stamp)
-            source_deadline = (envelope.source_bound.deadline_ns if envelope.source_bound is not None
-                               else self._last_stamp_ns + int((envelope.deadline_ns-now)*self.speedup))
+            source_deadline = None
+            if envelope.source_bound is not None:
+                source_deadline = envelope.source_bound.deadline_ns
+            elif self.scheduling == 'accelerated':
+                source_deadline = self._last_stamp_ns + int((envelope.deadline_ns-now)*self.speedup)
             with self._command_lock:
                 self._commands[name] = (envelope.value, envelope.deadline_ns)
                 self._envelopes[name] = envelope
