@@ -125,7 +125,7 @@ async with Runtime(chassis.pose, chassis.state, chassis.velocity):
     await chassis.velocity.set(VelocityCommand(.2, .0), ttl=.2)
 ```
 
-RSim 组合要求 `rsim>=0.4.0`（包含端口校验、episode历史隔离与通用客户端）。完整端口只在 `mujocosim.rsim.drivers.chassis.MujocoChassisFactory.port_specs()` 声明。 `build/shared` 捕获场景内容指纹，并在 owner 创建资源前复核；文件变化后须重新创建描述。显式 `scene_revision` 由调用方负责代表稳定资源版本。`build()` 构造本地组件，`shared(key=...)` 构造显式启动描述，`device(key=...)` 只连接已运行实例。`INTERFACE_VERSION='chassis-ports-v1'` 与 pyrobo 内存设备一致；共同端口为 `pose/state/velocity`。`pose` 明确是 ground truth，地图和导航输入由应用注入。
+RSim 组合要求 `rsim>=0.4.0`（包含端口校验、episode历史隔离与通用客户端）。完整的 16 个端口只在 `mujocosim.rsim.drivers.chassis.MujocoChassisFactory.port_specs()` 声明。`build/shared` 捕获场景内容指纹，并在 owner 创建资源前复核；文件变化后须重新创建描述。显式 `scene_revision` 同样检查实际资源内容，不能替代摘要。生成缓存的位置 `cache_root` 和运行日志不影响指纹，物理、传感器、推进模式和安全配置会影响指纹。`build()` 构造本地组件，`shared(key=...)` 构造显式启动描述，`device(key=...)` 只连接已运行实例。`INTERFACE_VERSION='chassis-ports-v1'` 与 pyrobo 内存设备一致；共同端口为 `pose/state/velocity`。`pose` 明确是 ground truth，地图和导航输入由应用注入。
 
 `factory.service(source=shared, ...)` 可将同一个 World 包装成原 `rsim.devices.Chassis` 的 RPC 服务；Shared Ports 与 RPC 是不同接口，不能交换客户端。速度默认 TTL 上限 .5 s，运动默认关闭。一个 World 的物理、传感器、reset 和 inspect 始终由同一 owner 线程串行处理；数据读取不推进物理。
 
@@ -138,7 +138,44 @@ async with Runtime(view.state, view.reset_request):
     acknowledgement = await view.reset()  # 完成 reset 和首帧发布后返回 episode
 ```
 
-reset 保留原生物理时间（重新从零开始），增加 episode，清除旧历史并退休旧命令 epoch；控制器需使用新 epoch 才能恢复。 已开始的 reset 会完成 episode 事务后再传播调用方取消，关闭会等待事务结束。若物理 reset 后采样失败，清空历史并保持暂停，必须先成功 reset 再显式 resume。暂停同样清除执行命令，恢复不会续命旧命令。`inspect(callback)` 是本地 owner 线程工具入口，回调应返回快照，不能把活动 MjData 交给其他线程。新组件不提供 `.simulation` 公共可变视图。
+reset 采用原生物理时间（重新从零开始），增加 episode，清除旧历史、推进回执缓存并退休旧命令 epoch；控制器需使用新 epoch 才能恢复。已开始的 reset 会完成 episode 事务后再传播调用方取消，关闭会等待事务结束。若物理 reset 后采样失败，清空历史并保持暂停，必须先成功 reset 再显式 resume。暂停同样清除执行命令，恢复不会续命旧命令。`inspect(callback)` 是本地 owner 线程工具入口，回调应返回快照，不能把活动 MjData 交给其他线程；远端只提供固定 JSON 管理操作。新组件不提供 `.simulation` 公共可变视图。
+
+### 三种推进模式
+
+`MujocoChassisFactory(scheduling='realtime', speedup=1.)` 默认持续推进。`clock` 是源时间的语义域，与推进模式独立。所有模式始终使用 `physics.timestep`，负载不会扩大 dt；`1/hz` 必须是物理 dt 的整数倍。实时路径保持 host metronome，加速路径使用可调 host 节奏并跳过错过的唤醒，避免无界追赶。请求倍率是节奏配置，实际 RTF 需要测量。
+
+| 模式 | 物理推进 | 管理操作 |
+| --- | --- | --- |
+| `realtime` | 默认连续运行 | pause、resume、reset、describe |
+| `accelerated` | 按 `speedup` 调整 wall-time 节奏 | 同上，增加 `set_rate(rate)` |
+| `controlled` | 不注册自主推进任务 | 显式 advance、describe/synchronize、abort、reset |
+
+pause 立即退休命令，在下一完整物理子步前阻止继续推进，不发布新 tick。resume 和运行中的有效倍率变化增加 episode，清空历史/旧回执，发布新的边界快照；保留物理时间、控制 step_index 和累计物理子步数。暂停时修改倍率，在 resume 后生效。reset 才将 step_index 和累计子步数归零。帧元数据包含 `session/episode/step_index/source_rate/physical_substeps`。
+
+加速源可在打开后调用 `source.subscribe(policy='latest')` 或有限容量的 `policy='every', capacity=...`。每个消费者有独立订阅；`every` 在队列满时产生背压，暂停/重置会解除旧投递的等待。实时模式不接受 every。事件送达只是节奏通知，不能当作计算完成或命令接纳回执。跨进程消费者可使用 RSim 的 `SignalPacer` 订阅现有状态信号。
+
+### 受控推进和回执
+
+`SimulationDevice` 的 `advance_request / inspect_request / control_request` 与 reset 一起构成专用管理端口。通用 Chassis 客户端仍只需要 `pose/state/velocity`，不因此订阅图像或载入引擎。以下连接一个已经运行的 controlled 提供端：
+
+```python
+async with Runtime(view.state, view.velocity, view.advance_request, view.inspect_request):
+    status = await view.describe()  # synchronize() 同义，返回已提交状态
+    accepted = await view.velocity.set(VelocityCommand(.1), ttl=.3)
+    advanced = await view.advance(accepted['context'], accepted['command_id'], 10)
+    assert accepted['kind'] == 'CommandAccepted'
+    assert advanced['kind'] == 'PhysicsAdvanced'
+```
+
+`context` 是 `{session, episode, step_index}`，`command_id` 是 `{controller_id, controller_epoch, sequence}`。命令接纳回执还包含原始主机 `deadline_ns`、`source_deadline_ns` 和 `port`。advance 请求包含 `context/command_id/requested_substeps`；`requested_substeps` 计固定物理 dt 次数，成功只增加一个控制 step_index。默认最多 1000 个子步，可通过 `max_substeps` 配置。
+
+只有全部积分和快照发布完成才返回 `PhysicsAdvanced`：其中 `request_context` 是 k，`context` 是 k+1，同时给出命令身份、请求/实际子步数、累计 `physical_substeps`、源 `stamp_ns`、`phase='READY'` 和状态摘要。相同请求重试返回原回执，即使原命令 TTL 已过期；同一 context 换命令或子步数会被拒绝。默认缓存最近 32 个请求，可用 `ack_capacity` 配置；被淘汰的旧步只能拒绝，不能重新执行。
+
+每个子步前同时复核主机 monotonic TTL 和可选的 `SourceCommandBound`。后者保留提交时的源 context/clock/deadline，接纳时不重新锚定；实时模式同样检查。没有显式源期限的加速命令，还保留按接纳时剩余主机预算和倍率计算的固定源期限。部分积分、请求过期、命令身份不匹配或引擎失败会进入 `ABORTED`，停止后续 advance，恢复需要 reset。`describe/synchronize` 返回真实已知的 stamp、累计子步和 `last_result.kind='PhysicsAborted'`；原生状态无法读取时 `state_known=false`，未知数值为 null，不能视为零步。
+
+调用方取消会等正在进行的物理事务完成或 ABORTED 后再传播。ACK 丢失不代表没有推进；先 synchronize，再用完全相同的请求恢复缓存结果或显式 reset。`abort(reason)` 可主动终止会话。完整 `SimulationDevice` 需要新管理端口；旧 Provider 必须停止并用新工厂重建，通用 Chassis 子集保持兼容。
+
+服务 CLI 同样接受 `--scheduling realtime|accelerated|controlled` 和 `--speedup N`。这些接口提供受控物理事务；计算阶段之间的锁步顺序由应用的 RSim stepper 显式协调。
 
 旧 `mujocosim.integrations.rsim.create_source` 保留到 0.4 的过渡入口，委托同一工厂并显式采用 `legacy_continuous` 时间策略；旧直接 `.simulation` 访问仅存在于该兼容 facade。停止 Provider 后整体更新 RSim 与 MujocoSim，再按新工厂重建，不恢复旧进程的 pickle。 点云导航共享视图同步升级为 `mujocosim-navigation-v2`，旧客户端须更新后重新连接。
 
@@ -301,7 +338,7 @@ RSim 元数据中的小型变换矩阵和相机内参以不可变嵌套 tuple �
 MUJOCO_GL=egl python -m pytest tests -q
 # 明确选取两个独立解释器，证明 provider 无 pyrobo、专有客户端无 mujoco
 python tests/check_environments.py --provider-python /path/to/provider/bin/python \
-  --client-python /path/to/client/bin/python --output assets/environment-check
+  --client-python /path/to/client/bin/python --output assets/environment-check --scheduling controlled
 ```
 
-跨环境测试会启动显式 Provider，连接同一个 World，验证 reset 完成回执、新 episode、历史隔离和实际 worker 解释器。真实设备/ROS2 硬件、GUI 交互、跨主机控制和跨进程严格锁步不在此测试范围。开发机配置、实际运行结果、兼容组合与阶段未完成项记录在本地 `PROJECT.md`。
+跨环境测试会启动显式 Provider，连接同一个 World，验证 reset 完成回执、新 episode、历史隔离和实际 worker 解释器；controlled 模式另验证暂存、推进、查询、过期重试、暂停/恢复。全量测试在装有 pyrobo 时还实际运行 1/2/10 倍率的同一环境导航控制器，验证到达、停止和无碰撞；无 pyrobo 的 engine/provider 环境明确跳过这项可选应用测试。真实设备/ROS2 硬件、GUI 交互、跨主机控制和跨进程严格锁步不在此提供端测试范围。开发机配置、实际运行结果、兼容组合与阶段未完成项记录在本地 `PROJECT.md`。

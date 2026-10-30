@@ -72,7 +72,7 @@ class MujocoChassisFactory:
     :class:`mujocosim.rsim.devices.SimulationDevice` directly.
     """
     INTERFACE_VERSION: ClassVar[str] = 'chassis-ports-v1'
-    FACTORY_VERSION: ClassVar[str] = 'mujocosim-chassis-v1'
+    FACTORY_VERSION: ClassVar[str] = 'mujocosim-chassis-v2'
 
     scene: str | Path | None = None
     scene_dir: str | Path | None = None
@@ -90,6 +90,9 @@ class MujocoChassisFactory:
     camera_hz: float = 5.
     hz: float = 50.
     speedup: float = 1.
+    scheduling: str = 'realtime'
+    max_substeps: int = 1000
+    ack_capacity: int = 32
     motion_enabled: bool = False
     history: int = 32
     image_history: int = 8
@@ -122,7 +125,8 @@ class MujocoChassisFactory:
             raise ValueError('floor_height must be finite')
         if not isinstance(self.sensors, SensorConfig) or not isinstance(self.physics, PhysicsConfig):
             raise TypeError('sensors/physics must be immutable SensorConfig/PhysicsConfig')
-        if not all(math.isfinite(v) and v > 0 for v in
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                   and math.isfinite(v) and v > 0 for v in
                    (self.hz, self.speedup, self.lidar_hz, self.camera_hz, self.pitch, self.max_ttl)):
             raise ValueError('rates, pitch and max_ttl must be finite and positive')
         substeps = 1/self.hz/self.physics.timestep
@@ -132,6 +136,10 @@ class MujocoChassisFactory:
             raise ValueError('clock must be nonempty')
         if self.reset_policy not in ('native', 'legacy_continuous'):
             raise ValueError('reset_policy must be native or legacy_continuous')
+        if self.scheduling not in ('realtime', 'accelerated', 'controlled'):
+            raise ValueError('scheduling must be realtime, accelerated or controlled')
+        if any(type(value) is not int or value < 1 for value in (self.max_substeps, self.ack_capacity)):
+            raise ValueError('max_substeps and ack_capacity must be positive integers')
         self.specs()
 
     @staticmethod
@@ -143,8 +151,9 @@ class MujocoChassisFactory:
                       for name in ('image', 'depth', 'camera_info', 'points')})
         ports['velocity'] = PortSpec(direction='sink', clock='host:monotonic',
                                      max_ttl=max_ttl, fallback=VelocityCommand())
-        ports['reset_request'] = PortSpec(direction='sink', clock='host:monotonic',
-                                          max_ttl=max_ttl, fallback=None)
+        for name in ('reset_request', 'advance_request', 'inspect_request', 'control_request'):
+            ports[name] = PortSpec(direction='sink', clock='host:monotonic',
+                                   max_ttl=max_ttl, fallback=None)
         return ports
 
     def specs(self):
@@ -153,10 +162,11 @@ class MujocoChassisFactory:
 
     def fingerprint(self):
         configuration = asdict(self)
+        # Generated asset locations do not change model or device identity.
+        configuration.pop('cache_root')
         configuration['factory'] = self.FACTORY_VERSION
         configuration['interface'] = self.INTERFACE_VERSION
-        configuration['scene_content'] = (self.scene_revision if self.scene_revision is not None
-                                           else _resource_digest(self.scene or self.scene_dir))
+        configuration['scene_content'] = _resource_digest(self.scene or self.scene_dir)
         data = json.dumps(configuration, sort_keys=True, separators=(',', ':'), allow_nan=False)
         return hashlib.sha256(data.encode('utf-8')).hexdigest()
 
@@ -189,6 +199,8 @@ class MujocoChassisFactory:
         return cls(partial(self.build_backend, expected_fingerprint=fingerprint), ports=self.specs(),
                    commands={'velocity': CommandSpec(VelocityCommand(), zero_velocity, validate_velocity)},
                    hz=self.hz, speedup=self.speedup, motion_enabled=self.motion_enabled,
+                   scheduling=self.scheduling, physics_timestep=self.physics.timestep,
+                   max_substeps=self.max_substeps, ack_capacity=self.ack_capacity,
                    clock=self.clock, reset_policy=self.reset_policy, configuration=fingerprint)
 
     def build(self):

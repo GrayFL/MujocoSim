@@ -32,7 +32,7 @@ sys.meta_path.insert(0, Blocked())
 from mujocosim.rsim import MujocoChassisFactory, SimulationDevice
 device = SimulationDevice(key='existing-world')
 assert device.connection is None
-assert len(MujocoChassisFactory.port_specs()) == 13
+assert len(MujocoChassisFactory.port_specs()) == 16
 '''
     subprocess.run([sys.executable, '-c', code], cwd='/tmp', check=True)
 
@@ -74,6 +74,11 @@ def test_fingerprint_is_stable_sensitive_and_content_based(tmp_path):
     assert remote == fingerprint
     assert replace(factory, motion_enabled=True).fingerprint() != fingerprint
     assert replace(factory, max_ttl=.25).fingerprint() != fingerprint
+    assert replace(factory, scheduling='controlled').fingerprint() != fingerprint
+    assert replace(factory, max_substeps=2).fingerprint() != fingerprint
+    assert replace(factory, ack_capacity=1).fingerprint() != fingerprint
+    assert replace(factory, cache_root=tmp_path/'cache-one').fingerprint() == fingerprint
+    assert replace(factory, cache_root=tmp_path/'cache-two').fingerprint() == fingerprint
     assert replace(factory, physics=PhysicsConfig(timestep=.001)).fingerprint() != fingerprint
     assert replace(factory, robot=replace(factory.robot, config=replace(factory.robot.config, wheel_track=.6))).fingerprint() != fingerprint
     (tmp_path/'provider.log').write_text('logging must not change device configuration')
@@ -81,6 +86,22 @@ def test_fingerprint_is_stable_sensitive_and_content_based(tmp_path):
     path = tmp_path/'scene.xml'
     path.write_text(path.read_text() + '\n')
     assert factory.fingerprint() != fingerprint
+
+
+def test_explicit_scene_revision_cannot_hide_changed_resources(tmp_path):
+    make_room(tmp_path)
+    factory = MujocoChassisFactory(scene_dir=tmp_path, scene_revision='published-1')
+    fingerprint = factory.fingerprint()
+    world = factory.build()
+    path = tmp_path/'scene.xml'
+    path.write_text(path.read_text() + '\n')
+    assert factory.fingerprint() != fingerprint
+    async def check():
+        with pytest.raises(ValueError, match='scene resources changed'):
+            async with Runtime(world.state):
+                pytest.fail('revision string bypassed the resource digest')
+        assert world.backend is None and world._executor is None
+    asyncio.run(check())
 
 
 def test_local_open_rechecks_scene_identity_before_engine_creation(tmp_path):

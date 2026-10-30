@@ -17,6 +17,7 @@ async def run(args):
     transport = configure_transport(TransportConfig('cyclonedds', args.domain))
     factory = MujocoChassisFactory(args.scene, cache_root=args.cache_dir,
                     motion_enabled=args.enable_motion, hz=args.hz,
+                    scheduling=args.scheduling, speedup=args.speedup,
                     sensors=SensorConfig(width=args.width, height=args.height))
     shared = factory.shared(key='mujoco:' + args.name, transport=transport, log_path=args.log)
     service = factory.service(source=shared, name=args.name, transport=transport)
@@ -24,7 +25,8 @@ async def run(args):
         await service.pose.get(timeout=30)
         status = dict(name=args.name, domain=args.domain, service_pid=os.getpid(),
                       physics_pid=shared.manifest['pid'], storage=str(shared.directory),
-                      motion_enabled=args.enable_motion, hz=args.hz)
+                      motion_enabled=args.enable_motion, hz=args.hz,
+                      scheduling=args.scheduling, speedup=args.speedup)
         if args.ready_file:
             path = Path(args.ready_file)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -52,6 +54,8 @@ def main(argv=None):
     parser.add_argument('--height', type=int, default=480)
     parser.add_argument('--hz', type=float, default=50.,
                         help='Simulation publication rate; physics timestep remains 0.002 s')
+    parser.add_argument('--scheduling', choices=('realtime', 'accelerated', 'controlled'), default='realtime')
+    parser.add_argument('--speedup', type=float, default=1., help='Host pacing rate; physics dt remains fixed')
     parser.add_argument('--seconds', type=float, help='Optional service lifetime after ready')
     parser.add_argument('--ready-file', help='Write service and physics PIDs after startup')
     args = parser.parse_args(argv)

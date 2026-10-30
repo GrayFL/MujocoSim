@@ -69,15 +69,29 @@ class Simulation:
         """Explicitly write world.xml beside scene assets for external tooling."""
         return build_model_xml(self.scene_dir, self.definition, self.sensors, self.physics)
 
-    def step(self, duration=0.02):
+    def step(self, duration=0.02, *, before_substep=None):
+        """Integrate fixed dt steps, optionally checking a caller-owned guard.
+
+        The callback receives the proposed native end timestamp in nanoseconds.
+        It runs before every whole step. A failure leaves completed integration
+        intact and refreshes kinematics so the owner can inspect that state.
+        """
         steps = round(duration/self.physics.timestep)
         if steps < 1 or not np.isclose(steps*self.physics.timestep, duration, atol=1e-10):
             raise ValueError("duration must be a positive integer multiple of the physics timestep")
-        for _ in range(steps):
-            mujoco.mj_step(self.model, self.data)
-        self.robot.after_step()
-        # mj_step leaves kinematic quantities at the pre-integration state.
-        mujoco.mj_forward(self.model, self.data)
+        completed = 0
+        try:
+            for _ in range(steps):
+                if before_substep is not None:
+                    before_substep(round((self.data.time + self.physics.timestep)*1e9))
+                mujoco.mj_step(self.model, self.data)
+                completed += 1
+        finally:
+            if completed:
+                self.robot.after_step()
+                # mj_step leaves kinematic quantities at the pre-integration state.
+                mujoco.mj_forward(self.model, self.data)
+        return completed
 
     @property
     def world_from_base(self):

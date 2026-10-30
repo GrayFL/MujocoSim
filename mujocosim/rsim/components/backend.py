@@ -68,6 +68,22 @@ class DifferentialDriveBackend:
         self.simulation.command(DriveCommand(command.linear_x, command.angular_z))
         self.simulation.step(duration)
 
+    @property
+    def stamp_ns(self):
+        """Native engine time, read exclusively on the owner thread."""
+        return round(float(self.simulation.data.time)*1e9)
+
+    def step_guarded(self, duration, command_provider):
+        def before_substep(end_stamp_ns):
+            command = command_provider(end_stamp_ns)['velocity']
+            self.simulation.command(DriveCommand(command.linear_x, command.angular_z))
+            # Robot command conversion can itself take time. Recheck at the
+            # final integration boundary, applying any newly expired fallback.
+            confirmed = command_provider(end_stamp_ns)['velocity']
+            if confirmed != command:
+                self.simulation.command(DriveCommand(confirmed.linear_x, confirmed.angular_z))
+        return self.simulation.step(duration, before_substep=before_substep)
+
     def reset(self, spawn=None):
         self.simulation.reset(self.spawn if spawn is None else spawn)
         self._next_scan = self._next_camera = 0.

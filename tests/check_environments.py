@@ -31,6 +31,7 @@ def run(args):
         command = [str(provider), '-m', 'mujocosim.apps.service', '--scene', str(scene),
                    '--cache-dir', str(temporary/'cache'), '--name', name,
                    '--domain', str(args.domain), '--width', '80', '--height', '60',
+                   '--scheduling', args.scheduling,
                    '--log', str(output/'worker.log'), '--ready-file', str(ready)]
         with (output/'provider.log').open('w') as stream:
             process = subprocess.Popen(command, cwd=output, env=env, stdout=stream, stderr=subprocess.STDOUT)
@@ -70,4 +71,5 @@ if __name__ == '__main__':
     parser.add_argument('--client-python', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--domain', type=int, default=62)
+    parser.add_argument('--scheduling', choices=('realtime', 'accelerated', 'controlled'), default='realtime')
     run(parser.parse_args())

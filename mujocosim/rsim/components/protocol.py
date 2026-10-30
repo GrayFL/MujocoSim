@@ -33,3 +33,17 @@ class SimulationBackend(Protocol):
     def reset(self, *args, **kwargs) -> None: ...
     def stop(self) -> None: ...
     def close(self) -> None: ...
+
+
+class GuardedSimulationBackend(SimulationBackend, Protocol):
+    """Optional capability for controlled and source-bounded physical steps.
+
+    stamp_ns is native physics time. step_guarded calls command_provider with
+    each proposed whole-substep end timestamp before applying commands, returns
+    the completed count, and leaves partial physical state inspectable on error.
+    These properties and methods are only accessed on the owner thread.
+    """
+
+    @property
+    def stamp_ns(self) -> int: ...
+    def step_guarded(self, duration: float, command_provider: Callable) -> int: ...
