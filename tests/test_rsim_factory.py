@@ -72,6 +72,11 @@ def test_fingerprint_is_stable_sensitive_and_content_based(tmp_path):
               f'print(MujocoChassisFactory(scene_dir={str(tmp_path)!r}).fingerprint())')
     remote = subprocess.check_output([sys.executable, '-c', script], cwd='/tmp', text=True).strip()
     assert remote == fingerprint
+
+    class OtherRig(SensorConfig):
+        pass
+
+    assert replace(factory, sensors=OtherRig()).fingerprint() != fingerprint
     assert replace(factory, motion_enabled=True).fingerprint() != fingerprint
     assert replace(factory, max_ttl=.25).fingerprint() != fingerprint
     assert replace(factory, scheduling='controlled').fingerprint() != fingerprint
@@ -86,6 +91,21 @@ def test_fingerprint_is_stable_sensitive_and_content_based(tmp_path):
     path = tmp_path/'scene.xml'
     path.write_text(path.read_text() + '\n')
     assert factory.fingerprint() != fingerprint
+
+
+def test_prepared_scene_is_independent_of_its_original_source(tmp_path):
+    make_room(tmp_path)
+    path = tmp_path/'metadata.json'
+    metadata = json.loads(path.read_text())
+    original = tmp_path/'raw.glb'
+    metadata['source'] = str(original)
+    path.write_text(json.dumps(metadata))
+    factory = MujocoChassisFactory(scene_dir=tmp_path)
+    fingerprint = factory.fingerprint()
+    original.write_bytes(b'original mesh only available on the conversion host')
+    assert factory.fingerprint() == fingerprint
+    original.unlink()
+    factory.build_backend(expected_fingerprint=fingerprint)
 
 
 def test_explicit_scene_revision_cannot_hide_changed_resources(tmp_path):

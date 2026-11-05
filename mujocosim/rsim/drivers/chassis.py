@@ -32,12 +32,11 @@ def _resource_digest(path):
             return
         seen.add(item)
         if item.is_dir():
-            # Match prepared-scene inputs consumed by Simulation, excluding
-            # logs, recordings and the optional generated world.xml.
+            # Hash exactly the inputs consumed by Simulation. Source paths in
+            # prepared metadata are provenance and may refer to another host.
             files = [item/name for name in ('scene.xml', 'metadata.json', 'navigation.npz')]
             files.extend(p for p in item.iterdir() if p.suffix.lower() in ('.obj', '.png'))
-            for file in files:
-                yield from resources(file, seen)
+            yield from files
             return
         yield item
         if item.suffix.lower() not in ('.json', '.gltf'):
@@ -164,6 +163,10 @@ class MujocoChassisFactory:
         configuration = asdict(self)
         # Generated asset locations do not change model or device identity.
         configuration.pop('cache_root')
+        for name, default in (('robot', DifferentialDrive), ('sensors', SensorConfig)):
+            kind = type(getattr(self, name))
+            if kind is not default:
+                configuration[f'{name}_type'] = f'{kind.__module__}.{kind.__qualname__}'
         configuration['factory'] = self.FACTORY_VERSION
         configuration['interface'] = self.INTERFACE_VERSION
         configuration['scene_content'] = _resource_digest(self.scene or self.scene_dir)

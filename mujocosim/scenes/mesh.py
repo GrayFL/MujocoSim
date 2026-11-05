@@ -1,8 +1,8 @@
-"""GLB -> textured visuals + conservative, single-level surface voxel collision.
+"""GLB -> textured visuals and conservative surface voxel collision.
 
 The original triangle mesh is retained for sensing. Collision boxes approximate
-only the selected storey. No building-wide convex hull or infinite ground plane
-is used: floor support exists only where the source has a floor surface.
+the selected storey (legacy default) or the whole building. The navigation grid
+selects one planar start level; neither mode splits the visual building asset.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from scipy import ndimage
 import trimesh
 from mujocosim.deployment import DEFAULT_CACHE
 
-CACHE_VERSION = 4
+CACHE_VERSION = 6
 
 
 def _numbers(values):
@@ -73,25 +73,43 @@ def _floor_height(mesh):
 
 
 def prepare_mesh(source, cache_root=DEFAULT_CACHE, *, up_axis="auto",
-                  floor_height=None, pitch=0.08, collision_height=1.16, force=False):
+                 floor_height=None, pitch=.08, collision_height=1.16, force=False,
+                 collision_scope="level"):
     source = Path(source).expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(source)
-    if up_axis not in ("auto", "y", "z") or not 0.025 <= pitch <= 0.2:
-        raise ValueError("up_axis must be auto/y/z; collision resolution must be 0.025..0.2 m")
+    options = dict(up_axis=up_axis, floor_height=floor_height, pitch=pitch,
+                   collision_height=collision_height, collision_scope=collision_scope)
     signature = dict(version=CACHE_VERSION, source=str(source), size=source.stat().st_size,
-                     mtime=source.stat().st_mtime_ns, up_axis=up_axis,
-                     floor_height=floor_height, pitch=pitch, collision_height=collision_height)
+                     mtime=source.stat().st_mtime_ns, **options)
     key = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()[:14]
     target = Path(cache_root).resolve() / f"{source.stem}-{key}"
     metadata_path = target / "metadata.json"
     if metadata_path.exists() and not force:
         return target
     target.mkdir(parents=True, exist_ok=True)
-    # A failed forced rebuild must never leave a cache that appears complete.
     metadata_path.unlink(missing_ok=True)
     print(f"Loading {source.name} ...", flush=True)
     scene = trimesh.load_scene(source, process=False)
+    geometry = write_mesh_scene(scene, target, **options)
+    metadata_path.write_text(json.dumps({**signature, **geometry}, indent=2), encoding="utf-8")
+    print(f"Scene ready: {geometry['collision_boxes']} collision boxes; spawn {geometry['spawn']}", flush=True)
+    return target
+
+
+def write_mesh_scene(scene, target, *, up_axis="auto", floor_height=None, pitch=.08,
+                     collision_height=1.16, collision_scope="level"):
+    """Write MJCF, textures, collisions and a spawn grid for a loaded trimesh.Scene.
+
+    Return geometry metadata including world_from_source. External scene builders
+    own source decoding, provenance, cache identity and publication.
+    """
+    if up_axis not in ("auto", "y", "z") or not 0.025 <= pitch <= 0.2:
+        raise ValueError("up_axis must be auto/y/z; collision resolution must be 0.025..0.2 m")
+    if collision_scope not in ("level", "scene"):
+        raise ValueError("collision_scope must be level or scene")
+    target = Path(target)
+    target.mkdir(parents=True, exist_ok=True)
     mesh = scene.to_mesh()
     if not len(mesh.faces):
         raise ValueError("Scene contains no triangles")
@@ -183,15 +201,25 @@ def prepare_mesh(source, cache_root=DEFAULT_CACHE, *, up_axis="auto",
     max_height = float(collision_height)
     if not np.isfinite(max_height) or max_height <= .08:
         raise ValueError("collision_height must be finite and > .08 m")
-    nz = int(np.ceil(max_height / pitch))
+    z_origin = (float(np.floor(mesh.bounds[0, 2] / pitch) * pitch)
+                if collision_scope == 'scene' else 0.)
+    z_top = mesh.bounds[1, 2] + pitch if collision_scope == 'scene' else max_height
+    nz = int(np.ceil((z_top-z_origin) / pitch))
+    if np.prod(shape) * nz > 160_000_000:
+        raise ValueError('Collision volume is too large; increase pitch')
     voxels = np.zeros((*shape, nz), bool)
     triangles = mesh.triangles
-    obstacle_faces = (triangles[:, :, 2].max(axis=1) > 0.08) & (triangles[:, :, 2].min(axis=1) < max_height)
+    obstacle_faces = (np.ones(len(triangles), bool) if collision_scope == 'scene' else
+                      (triangles[:, :, 2].max(axis=1) > 0.08) & (triangles[:, :, 2].min(axis=1) < max_height))
     print("Building collision surface voxels ...", flush=True)
     for points in _surface_points(mesh, obstacle_faces, pitch):
-        points = points[(points[:, 2] > 0.08) & (points[:, 2] < max_height)]
+        if collision_scope == 'scene':
+            # The selected floor has exact planar support; retain all other heights.
+            points = points[(points[:, 2] > .08) | (points[:, 2] < -.10)]
+        else:
+            points = points[(points[:, 2] > 0.08) & (points[:, 2] < max_height)]
         ij = np.floor((points[:, :2] - origin) / pitch).astype(int)
-        k = np.floor(points[:, 2] / pitch).astype(int)
+        k = np.floor((points[:, 2]-z_origin) / pitch).astype(int)
         voxels[ij[:, 0], ij[:, 1], k] = True
     count = 0
 
@@ -215,11 +243,14 @@ def prepare_mesh(source, cache_root=DEFAULT_CACHE, *, up_axis="auto",
             if rect not in current:
                 x0, x1, y0, y1 = rect
                 k0 = active.pop(rect)
-                box([origin[0]+x0*pitch, origin[1]+y0*pitch, k0*pitch],
-                    [origin[0]+x1*pitch, origin[1]+y1*pitch, k*pitch], "obstacle")
+                box([origin[0]+x0*pitch, origin[1]+y0*pitch, z_origin+k0*pitch],
+                    [origin[0]+x1*pitch, origin[1]+y1*pitch, z_origin+k*pitch], "obstacle")
         for rect in current:
             active.setdefault(rect, k)
-    free = floor_mask & ~voxels.any(axis=2)
+    k_min = max(0, int(np.floor((.08-z_origin)/pitch)))
+    k_max = min(nz, int(np.ceil((max_height-z_origin)/pitch)))
+    navigation_obstacles = voxels[:, :, k_min:k_max].any(axis=2)
+    free = floor_mask & ~navigation_obstacles
     clearance = ndimage.distance_transform_edt(np.pad(free, 1))[1:-1, 1:-1] * pitch
     best = np.unravel_index(np.argmax(clearance), clearance.shape)
     if clearance[best] <= 0:
@@ -237,15 +268,14 @@ def prepare_mesh(source, cache_root=DEFAULT_CACHE, *, up_axis="auto",
             steps = step
         lengths.append(steps)
     yaw = int(np.argmax(lengths)) * np.pi / 2
-    metadata = dict(**signature, detected_up_axis=up_axis, selected_floor=floor,
+    metadata = dict(detected_up_axis=up_axis, selected_floor=floor,
                     world_from_source=transform.tolist(), bounds=mesh.bounds.tolist(),
                     spawn=[*spawn_xy.tolist(), float(yaw)], spawn_clearance=float(clearance[best]),
                     visual_meshes=len(visual_parts), triangles=len(mesh.faces),
-                    collision_boxes=count, grid_origin=origin.tolist())
+                    collision_boxes=count, grid_origin=origin.tolist(),
+                    collision_z_range=[z_origin, float(z_top)])
     ET.indent(root)
     ET.ElementTree(root).write(target / "scene.xml", encoding="utf-8", xml_declaration=True)
-    np.savez_compressed(target / "navigation.npz", floor=floor_mask, obstacles=voxels.any(axis=2),
+    np.savez_compressed(target / "navigation.npz", floor=floor_mask, obstacles=navigation_obstacles,
                         clearance=clearance, origin=origin, resolution=pitch)
-    metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Scene ready: {count} collision boxes; spawn {metadata['spawn']}", flush=True)
-    return target
+    return metadata

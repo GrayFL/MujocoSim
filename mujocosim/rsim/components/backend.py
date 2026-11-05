@@ -44,6 +44,7 @@ class DifferentialDriveBackend:
         self.lidar_hz, self.camera_hz = lidar_hz, camera_hz
         self.motion_enabled = motion_enabled
         self.simulation = None
+        self.robot_geoms = None
         self._next_scan = self._next_camera = 0.
         self._last_velocity = None
         self._last_time = None
@@ -62,6 +63,8 @@ class DifferentialDriveBackend:
                                             self.cache_root, **self.options)
         self.simulation = Simulation(self.prepared_scene, robot=self.robot, sensors=self.sensors,
                                      physics=self.physics, spawn=self.spawn)
+        sim = self.simulation
+        self.robot_geoms = sim.model.body_rootid[sim.model.geom_bodyid] == sim.body_id
 
     def step(self, duration, commands):
         command = commands['velocity']
@@ -134,7 +137,7 @@ class DifferentialDriveBackend:
         # This planar fixture distinguishes horizontal robot/scene contacts
         # from the normal wheel/support contacts with the floor.
         obstacle_contacts = sum(
-            (sim.model.geom_group[contact.geom1] == 1) != (sim.model.geom_group[contact.geom2] == 1)
+            self.robot_geoms[contact.geom1] != self.robot_geoms[contact.geom2]
             and abs(contact.frame[2]) < .7
             for contact in sim.data.contact)
         values = dict(pose=pose, truth=pose.copy(), imu=imu, odom=odom,

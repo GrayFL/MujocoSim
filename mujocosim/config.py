@@ -26,6 +26,11 @@ class SensorConfig:
     depth_min: float = 0.05
     depth_max: float = 10.0
 
+    def attach(self, body):
+        """Install the sensor sites and camera on a robot's MJCF body."""
+        from .sensors.rig import attach_rig
+        attach_rig(body, self)
+
     def __post_init__(self):
         if self.lidar_beams < 4 or self.width < 1 or self.height < 1:
             raise ValueError("Invalid sensor resolution")

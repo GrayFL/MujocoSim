@@ -25,8 +25,7 @@ def build_model_xml(scene_dir, robot, sensors: SensorConfig | None, physics: Phy
     root.append(scene.find("worldbody"))
     body = robot.build(root)
     if sensors is not None:
-        from .sensors.rig import attach_rig
-        attach_rig(body, sensors)
+        sensors.attach(body)
     ET.indent(root)
     path = scene_dir / "world.xml"
     xml = ET.tostring(root, encoding="unicode", xml_declaration=True)

@@ -342,3 +342,9 @@ python tests/check_environments.py --provider-python /path/to/provider/bin/pytho
 ```
 
 跨环境测试会启动显式 Provider，连接同一个 World，验证 reset 完成回执、新 episode、历史隔离和实际 worker 解释器；controlled 模式另验证暂存、推进、查询、过期重试、暂停/恢复。全量测试在装有 pyrobo 时还实际运行 1/2/10 倍率的同一环境导航控制器，验证到达、停止和无碰撞；无 pyrobo 的 engine/provider 环境明确跳过这项可选应用测试。真实设备/ROS2 硬件、GUI 交互、跨主机控制和跨进程严格锁步不在此提供端测试范围。开发机配置、实际运行结果、兼容组合与阶段未完成项记录在本地 `PROJECT.md`。
+
+## 扩展场景和传感器
+
+普通 GLB 可用 `prepare_scene(path, collision_scope="scene")` 生成全高度碰撞体。默认的 `"level"` 使用选定地面附近的碰撞高度。两种模式都生成一个平面的出生点和净空网格。自定义场景构造器可将已解码的 `trimesh.Scene` 交给 `mujocosim.scenes.write_mesh_scene(scene, directory, ...)`，得到 MJCF、纹理、导航栅格和包含 `world_from_source` 的几何元数据。构造器负责数据源、缓存和写入最终的 `metadata.json`。整目录部署时，RSim 工厂按 MJCF、元数据、导航栅格及运行时纹理/网格计算指纹，源文件路径仅用于溯源。
+
+第三方机器人可继承 `DifferentialDrive` 并扩展 `build(root)`。传感器可继承 `SensorConfig`，覆盖 `attach(body)` 来安装 MJCF 传感器，或在 `super().attach(body)` 后调整标准安装架。将这两个实例传给 `MujocoChassisFactory(robot=..., sensors=...)` 即可使用原有底盘和 RGB-D 端口。

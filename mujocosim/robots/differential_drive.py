@@ -36,8 +36,8 @@ class DifferentialDrive:
         ET.SubElement(body, "site", name="imu", pos="0 0 0", size="0.005", rgba="0 0 0 0")
         ET.SubElement(body, "geom", name="chassis", type="box", pos="0 0 0.235",
                       size=_numbers([robot.side/2, robot.side/2, 0.065]), mass="12", rgba="0.08 0.35 0.65 1")
-        ET.SubElement(body, "geom", name="front_mark", type="box", pos="0.299 0 0.25",
-                      size="0.001 0.10 0.025", mass="0.001", contype="0", conaffinity="0", rgba="1 0.7 0.1 1")
+        ET.SubElement(body, "geom", name="front_mark", type="box", pos=_numbers([robot.side/2-.001, 0, .25]),
+                      size=_numbers([.001, robot.side/6, .025]), mass="0.001", contype="0", conaffinity="0", rgba="1 0.7 0.1 1")
         for sign, side in ((1, "left"), (-1, "right")):
             wheel = ET.SubElement(body, "body", name=f"{side}_wheel", pos=_numbers([0, sign*robot.wheel_track/2, robot.wheel_radius]))
             ET.SubElement(wheel, "joint", name=f"{side}_wheel_joint", type="hinge", axis="0 1 0", damping="0.05", armature="0.01")
@@ -46,7 +46,8 @@ class DifferentialDrive:
                           euler="1.5707963267948966 0 0", mass="0.6", rgba="0.055 0.06 0.07 1",
                           friction="1.3 0.0001 0.00001", priority="1", condim="3")
         # Two low-friction ball supports, not driven wheels, stabilise pitch.
-        for x in (-0.235, 0.235):
+        caster_offset = robot.side * (.235 / .6)
+        for x in (-caster_offset, caster_offset):
             ET.SubElement(body, "geom", type="sphere", pos=f"{x} 0 0.04", size="0.04", mass="0.1",
                           rgba="0.55 0.55 0.55 1", friction="0.001 0.00001 0.00001", priority="1", condim="3")
         actuator = ET.SubElement(root, "actuator")

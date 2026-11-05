@@ -2,7 +2,7 @@
 
 ## 归属和依赖方向
 
-MujocoSim 拥有仿真世界的具体内容，RSim 拥有组件和协议机制。场景、机器人、传感器彼此组合；RSim 由应用层接入，不作为物理实现的宿主。
+MujocoSim 提供仿真世界和模型构造接口。调用方组合具体场景、机器人和传感器，通过 RSim 组件对外提供设备端口。
 
 ```text
 mujocosim/
@@ -18,7 +18,7 @@ mujocosim/
     suite.py                # LaserScan / RGBDFrame 与采样
   scenes/
     prepare.py              # SceneBuilder 与格式分派
-    mesh.py                 # GLB/GLTF，含 HM3D，选层/体素碰撞
+    mesh.py                 # GLB/GLTF 和已解码几何，选层/整场景体素碰撞
     composition.py          # 房间或扫描场景 + 动态物体
     objects.py              # 物体定向、缩放、减面、显示与碰撞
   rsim/drivers/chassis.py   # MujocoChassisFactory：配置与完整端口唯一声明
@@ -52,13 +52,13 @@ RobotState 负责 reset、apply、stop、after_reset、after_step 和 telemetry�
 
 场景准备产物保持简单：目录内含 `scene.xml`（asset/worldbody）、`metadata.json`（spawn、world_from_source 等）和 `navigation.npz`（floor、obstacles、clearance、origin、resolution）。MuJoCo 引擎只消费这个结果，不区分 HM3D 与手工场景。
 
-`prepare_scene` 支持 GLB/GLTF、组合 JSON、已有产物目录和自定义 `SceneBuilder.prepare(cache_root, **options)`。新增输入格式时实现独立 builder，生成同一产物；需要 CLI 后缀支持时在入口增加显式分派。未来接原生 MJCF/USD 或其他数据集，转换和地面/导航适配都在 scenes，不进入 RSim。当前没有宣称已支持这些格式。
+`prepare_scene` 支持 GLB/GLTF、组合 JSON、已有产物目录和自定义 `SceneBuilder.prepare(cache_root, **options)`。第三方 builder 可复用 `write_mesh_scene` 写入已解码几何，管理自己的数据格式、坐标约定和缓存。HM3D 离线转换由 rsim_habitat 提供。
 
 场景不按固定 0.6 m 机器人拒绝准备；机器人净空校验在 Simulation.reset。扫描碰撞高度是场景参数，修改机器人高度时需相应配置。JSON 组合使用初始物体占地检查放置冲突，真实物体运动交给 MuJoCo。
 
 ## 传感器和运行器
 
-传感器采样与 MJCF 构型分开，默认 rig 是当前 demo 的线雷达/RGBD。新传感器在 sensors 中实现安装、采样与数据结构，再由本地运行/集成组装；本次没有为每种传感器建立插件层。支持无 rig 的 Simulation，未安装的传感器调用报明确错误。
+传感器采样与 MJCF 构型分开，默认 rig 是当前 demo 的线雷达/RGBD。第三方安装架可以继承 `SensorConfig` 并覆盖 `attach(body)`，通过现有工厂与机器人组合。支持无 rig 的 Simulation，未安装的传感器调用报明确错误。
 
 Simulation 的 command 只转交 RobotState。step 推进 MuJoCo，再更新机器人内部测量状态并刷新正向运动学。reset 恢复全场景，包括动态家具，再让机器人执行其初态设置。核心不负责异步调度；离屏 GL 必须在使用它的线程创建和释放。运行时直接编译内存 XML，显式 export_model 才写 world.xml。
 
